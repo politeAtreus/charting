@@ -301,19 +301,19 @@ st.caption(f"Numeric: {len(df.select_dtypes(include=[np.number]).columns)} | "
            f"Datetime-like: {sum(pd.api.types.is_datetime64_any_dtype(df[c]) for c in df.columns)}")
 
 with st.expander("Data preview", expanded=True):
-    st.dataframe(df.head(200), use_container_width=True)
+    st.dataframe(df.head(200), width = "stretch")
 
 summary = summarize_df(df)
 col1, col2 = st.columns([4,1])
 with col1:
     if summary.get("numeric_overview") is not None:
         st.subheader("Numeric Overview")
-        st.dataframe(summary["numeric_overview"], use_container_width=True)
+        st.dataframe(summary["numeric_overview"], width = "stretch")
 with col2:
     miss = summary.get("missing_counts", pd.Series(dtype=int))
     if not miss.empty:
         st.subheader("Missing Values")
-        st.dataframe(miss.to_frame("missing"), use_container_width=True)
+        st.dataframe(miss.to_frame("missing"), width = "stretch")
 
 if summary.get("categorical_tops"):
     with st.expander("Categorical: Top values", expanded=False):
@@ -340,7 +340,7 @@ with c4:
 
 x_col = None if x_choice == "(index)" else x_choice
 fig = build_plotly_figure(df, kind, x_col, y_choices, downsample, agg, title=uploaded.name)
-st.plotly_chart(fig, use_container_width=True, config={"displaylogo": False})
+st.plotly_chart(fig, width = "stretch", config={"displaylogo": False})
 
 # ---- Downloads
 st.subheader("Downloads")
