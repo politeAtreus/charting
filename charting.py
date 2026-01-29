@@ -238,71 +238,84 @@ def summarize_df(df: pd.DataFrame) -> dict:
     return summary
 
 # -------------------- Plotly charting --------------------
-def build_plotly_figure(df: pd.DataFrame, kind: str, x: Optional[str], y_cols: list,
-                        downsample: Optional[str], agg: str, title: str) -> go.Figure:
+def build_plotly_dual_axis(
+    df: pd.DataFrame,
+    x: Optional[str],
+    y_left: list[str],
+    y_right: list[str],
+    kind: str,
+    title: str
+    ) -> go.Figure:
+    """
+    Build a Plotly chart with dual y-axes (left and right).
+    - `y_left` and `y_right` are lists of column names to plot on the left and right Y axes, respectively.
+    """
+    # Resolve X
     if x is None and isinstance(df.index, pd.DatetimeIndex):
         x_vals = df.index
+        x_label = df.index.name or "index"
     elif x is None:
         x_vals = np.arange(len(df))
+        x_label = "index"
     else:
         x_vals = df[x]
+        x_label = x
 
-    num = df.select_dtypes(include=[np.number])
-    y_cols = [c for c in y_cols if c in num.columns]
-    if not y_cols:
-        fig = go.Figure()
-        fig.add_annotation(x=0.5, y=0.5, text="No numeric columns selected.", showarrow=False)
-        fig.update_xaxes(visible=False)
-        fig.update_yaxes(visible=False)
-        fig.update_layout(title=title or "Quick Plot")
-        return fig
+    fig = go.Figure()
 
-    plot_df = pd.DataFrame({"__x__": x_vals})
-    for c in y_cols:
-        plot_df[c] = df[c]
+    # LEFT AXIS (e.g., Power)
+    for c in y_left:
+        fig.add_trace(
+            go.Scatter(
+                x=x_vals,
+                y=df[c],
+                name=c,
+                mode="lines" if kind == "line" else "markers",
+                yaxis="y1"
+            )
+        )
 
-    # optional time resample (if x is datetime-like index/column)
-    if downsample and (isinstance(plot_df["__x__"], pd.Series) and
-                       pd.api.types.is_datetime64_any_dtype(plot_df["__x__"])):
-        g = plot_df.set_index("__x__").resample(downsample)
-        if agg == "mean":
-            plot_df = g.mean().reset_index()
-        elif agg == "median":
-            plot_df = g.median().reset_index()
-        elif agg == "min":
-            plot_df = g.min().reset_index()
-        elif agg == "max":
-            plot_df = g.max().reset_index()
-        elif agg == "sum":
-            plot_df = g.sum().reset_index()
-        plot_df.rename(columns={"__x__": "x"}, inplace=True)
-        x_field = "x"
-    else:
-        plot_df.rename(columns={"__x__": "x"}, inplace=True)
-        x_field = "x"
+    # RIGHT AXIS (e.g., Energy)
+    for c in y_right:
+        fig.add_trace(
+            go.Scatter(
+                x=x_vals,
+                y=df[c],
+                name=c,
+                mode="lines" if kind == "line" else "markers",
+                yaxis="y2"
+            )
+        )
 
-    if kind == "line":
-        fig = go.Figure()
-        for c in y_cols:
-            fig.add_trace(go.Scatter(x=plot_df[x_field], y=plot_df[c], mode="lines", name=c))
-    elif kind == "scatter":
-        fig = go.Figure()
-        for c in y_cols:
-            fig.add_trace(go.Scatter(x=plot_df[x_field], y=plot_df[c], mode="markers", name=c))
-    else:  # bar
-        fig = go.Figure()
-        for c in y_cols:
-            fig.add_trace(go.Bar(x=plot_df[x_field], y=plot_df[c], name=c))
-
+    # Update layout with dual axes
     fig.update_layout(
-        title=title or "Quick Plot",
-        xaxis_title=(x if x is not None else (df.index.name or "index")),
-        yaxis_title="value",
-        legend_title="Series",
-        margin=dict(l=40, r=20, t=60, b=40),
+        title=title,
+        xaxis=dict(title=x_label),
+        yaxis=dict(
+            title=" • ".join(y_left) if y_left else "Value",
+            side="left",
+            showgrid=True
+        ),
+        yaxis2=dict(
+            title=" • ".join(y_right),
+            side="right",
+            overlaying="y",
+            showgrid=False
+        ),
         hovermode="x unified",
+        margin=dict(l=60, r=60, t=60, b=40),
+        legend=dict(
+            orientation="h",  # horizontal legend
+            yanchor="bottom",
+            y=-0.4,
+            xanchor="center",
+            x=0.5,
+            title="Click to toggle • Double-click to isolate"
+        )
     )
+
     return fig
+
 
 # -------------------- UI --------------------
 st.set_page_config(page_title="CSV Plotter", layout="wide")
@@ -402,24 +415,48 @@ if summary.get("categorical_tops"):
 
 # ---- Plotly controls
 st.subheader("Chart")
+
+# Let user select columns
 num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
 all_cols = list(df.columns)
 
 c1, c2, c3, c4 = st.columns([1.2, 1.2, 1.2, 1])
 with c1:
-    x_choice = st.selectbox("X axis", ["(index)"] + all_cols, index= "Time(h)" in all_cols and all_cols.index("Time(h)") + 1 or 0)
-with c2:
-    y_choices = st.multiselect("Y axis (numeric)", num_cols)
-with c3:
-    kind = st.selectbox("Chart type", ["line", "scatter", "bar"], index=0)
-with c4:
-    downsample = st.selectbox("Resample", ["(none)", "s", "5s", "1min", "5min", "15min", "1h", "1d"], index=0)
-    downsample = None if downsample == "(none)" else downsample
-    agg = st.selectbox("Agg", ["mean", "median", "min", "max", "sum"], index=0)
+    x_choice = st.selectbox(
+        "X axis",
+        ["(index)"] + all_cols,
+        index=("Time(h)" in all_cols and all_cols.index("Time(h)") + 1) or 0
+    )
 
-x_col = None if x_choice == "(index)" else x_choice
-fig = build_plotly_figure(df, kind, x_col, y_choices, downsample, agg, title=uploaded.name)
-st.plotly_chart(fig, width = "stretch", config={"displaylogo": False})
+with c2:
+    y_left = st.multiselect(
+        "Left Y axis",
+        num_cols,
+        default=[c for c in ["Power_W"] if c in num_cols]  # Pre-select Power if available
+    )
+
+with c3:
+    y_right = st.multiselect(
+        "Right Y axis",
+        num_cols,
+        default=[c for c in ["Energy_Wh"] if c in num_cols]  # Pre-select Energy if available
+    )
+
+with c4:
+    kind = st.selectbox("Chart type", ["line", "scatter"], index=0)
+
+# Dynamically build the figure with dual axes
+fig = build_plotly_dual_axis(
+    df=df,
+    x=x_choice,
+    y_left=y_left,
+    y_right=y_right,
+    kind=kind,
+    title="Time Series Chart"
+)
+
+# Display the plot
+st.plotly_chart(fig, use_container_width=True, config={"displaylogo": False})
 
 # ---- Downloads
 st.subheader("Downloads")
