@@ -406,7 +406,7 @@ all_cols = list(df.columns)
 
 c1, c2, c3, c4 = st.columns([1.2, 1.2, 1.2, 1])
 with c1:
-    x_choice = st.selectbox("X axis", ["(index)"] + all_cols)
+    x_choice = st.selectbox("X axis", ["(index)"] + all_cols, index= "Time(s)" in all_cols and all_cols.index("Time(s)") + 1 or 0)
 with c2:
     y_choices = st.multiselect("Y axis (numeric)", num_cols)
 with c3:
