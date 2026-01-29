@@ -29,7 +29,6 @@ def _guess_col(df, candidates):
     for k, orig in cols.items():
         if any(name.lower() in k for name in candidates):
             return orig
-    return None
 
 def add_power_energy(
         df: pd.DataFrame,
@@ -65,6 +64,7 @@ def add_power_energy(
 
     if t is not None and pd.api.types.is_datetime64_any_dtype(t):
         dt_h = t.diff().dt.total_seconds().fillna(0) / 3600.0
+        dt_h = pd.Series(dt_h, index=out.index)
     else:
         # constant sample period to fallback on (sec)
         if not constant_dt_s:
@@ -177,16 +177,16 @@ def read_flexi_csv_from_bytes(
 
     # Read raw as strings. Prefer fast C engine; fall back to Python engine.
     # IMPORTANT: Don't pass low_memory when engine="python".
-    read_kwargs = dict(
-        header=None,
-        sep=delim,
-        dtype=str,
-        engine="c",              # try C engine first
-        on_bad_lines="skip"      # works on modern pandas with C engine; else we'll retry
-    )
+    read_kwargs: dict = {
+        "header": None,
+        "sep": delim,
+        "dtype": str,
+        "engine": "c",              # try C engine first
+        "on_bad_lines": "skip"      # works on modern pandas with C engine; else we'll retry
+    }
 
     try:
-        df_raw = pd.read_csv(io.BytesIO(data), encoding="utf-8", errors="ignore", **read_kwargs)
+        df_raw = pd.read_csv(io.BytesIO(data), encoding="utf-8", **read_kwargs)
     except Exception:
         # Fallback: Python engine (handles weird CSVs better)
         read_kwargs_fallback: dict = {
@@ -197,7 +197,7 @@ def read_flexi_csv_from_bytes(
             "on_bad_lines": "skip"
             # NO low_memory here
         }
-        df_raw = pd.read_csv(io.BytesIO(data), encoding="utf-8", errors="ignore", **read_kwargs_fallback)
+        df_raw = pd.read_csv(io.BytesIO(data), encoding="utf-8", **read_kwargs_fallback)
 
     # drop fully empty rows
     mask_empty = df_raw.apply(lambda r: r.isna().all() or (r.astype(str).str.strip() == "").all(), axis=1)
