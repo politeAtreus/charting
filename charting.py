@@ -25,10 +25,6 @@ def _guess_col(df, candidates):
     for name in candidates:
         if name.lower() in cols:
             return cols[name.lower()]
-    # fuzzy match
-    for k, orig in cols.items():
-        if any(name.lower() in k for name in candidates):
-            return orig
 
 def add_power_energy(
         df: pd.DataFrame,
@@ -362,7 +358,7 @@ st.caption(f"Numeric: {len(df.select_dtypes(include=[np.number]).columns)} | "
 st.markdown("### Derived metrics (Power & Energy)")
 
 # Guess defaults
-default_v = _guess_col(df, ["battVolts", "volts", "voltage", "V", "mV"])
+default_v = _guess_col(df, ["battVoltage", "volts", "voltage", "V", "mV"])
 default_i = _guess_col(df, ["battCurrent", "current", "I", "amps", "mA"])
 
 colA, colB, colC, colD, colE = st.columns([1.5, 1.5, 1.1, 1.1, 1.4])
