@@ -32,46 +32,31 @@ def add_power_energy(
         i_col: str,
         current_scale: float = 0.001,
         voltage_scale: float = 0.001,
-        time_source: str = "auto",
-        time_col: str | None = None,
-        constant_dt_s: float | None = None,
+        time_col: str = "Time(s)",      # The column that has time in seconds
+        energy_from_abs_power: bool = False,
         ) -> pd.DataFrame:
+    
+    # Check if the time column exists
+    if time_col not in df.columns:
+        st.error(f"The required time column '{time_col}' is missing in the CSV data.")
+
     out = df.copy()
 
     # 1. Power (W) = V * I
-    v = pd.to_numeric(out[v_col], errors = "coerce") * float(voltage_scale)
-    i = pd.to_numeric(out[i_col], errors = "coerce") * float(current_scale)
+    v = pd.to_numeric(out[v_col], errors = "coerce") * float(voltage_scale) # Convert to V
+    i = pd.to_numeric(out[i_col], errors = "coerce") * float(current_scale) # Convert to A
     out["Power_W"] = v * i
 
     # 2. Build dt in hours
-    if time_source == "auto":
-        if isinstance(out.index, pd.DatetimeIndex):
-            t = out.index.to_series()
-        else:
-            # pick the first date-time like col
-            dt_cols = [c for c in out.columns if pd.api.types.is_datetime64_any_dtype(out[c])]
-            t = out[dt_cols[0]] if dt_cols else None
-    
-    elif time_source == "column" and time_col:
-        t = out[time_col]
-    
-    else:
-        t = None
-
-    if t is not None and pd.api.types.is_datetime64_any_dtype(t):
-        dt_h = t.diff().dt.total_seconds().fillna(0) / 3600.0
-        dt_h = pd.Series(dt_h, index=out.index)
-    else:
-        # constant sample period to fallback on (sec)
-        if not constant_dt_s:
-            constant_dt_s = 1.0 # default 1 second
-        dt_h = pd.Series(constant_dt_s / 3600.0, index=out.index)
+    t = pd.to_numeric(out[time_col], errors = "coerce")
+    dt_s = t.diff().fillna(0)   # time difference (delta) in seconds
+    dt_h = dt_s / 3600.0    # convert seconds to hours
 
     # 3. Energy integration (Wh) via trapezoidal rule
     power = out["Power_W"].astype(float)
-    power_prev = power.shift(1).fillna(power)
-    dE = 0.5 * (power + power_prev) * dt_h
-    out["Energy_Wh"] = dE.cumsum().ffill().fillna(0)
+    power_prev = power.shift(1).fillna(power)   # previous power value, handle first row
+    dE = 0.5 * (power + power_prev) * dt_h  # trapezoidal area for each interval is (P1 + P2)/2 * dt
+    out["Energy_Wh"] = dE.cumsum().fillna(0)
 
     return out
 
@@ -139,7 +124,7 @@ def sniff_delimiter(sample_bytes: bytes) -> str:
     try:
         dialect = csv.Sniffer().sniff(
             sample_bytes.decode("utf-8", errors="ignore"),
-            delimiters=[",", ";", "\t", "|"]
+            delimiters=",;\t|"
         )
         return dialect.delimiter
     except Exception:
@@ -361,13 +346,13 @@ st.markdown("### Derived metrics (Power & Energy)")
 default_v = _guess_col(df, ["battVoltage", "volts", "voltage", "V", "mV"])
 default_i = _guess_col(df, ["battCurrent", "current", "I", "amps", "mA"])
 
-colA, colB, colC, colD, colE = st.columns([1.5, 1.5, 1.1, 1.1, 1.4])
+colA, colB, colC, colD, colE = st.columns([1.5, 1.5, 1.0, 1.0])
 
 with colA:
-    v_col = st.selectbox("Voltage column", options=list(df.columns), index=(list(df.columns).index(default_v) if default_v in df.columns else 0))
+    v_col = st.selectbox("Voltage column", options=list(df.columns), index=(list(df.columns).index(default_v) if default_v and default_v in df.columns else 0))
 
 with colB:
-    i_col = st.selectbox("Current column", options=list(df.columns), index=(list(df.columns).index(default_i) if default_i in df.columns else 0))
+    i_col = st.selectbox("Current column", options=list(df.columns), index=(list(df.columns).index(default_i) if default_i and default_i in df.columns else 0))
     
 with colC:
     voltage_scale = st.number_input("Voltage scale (→ V)", value=0.001, step=0.001, format="%.6f", help="0.001 if column is in mV")
@@ -375,16 +360,9 @@ with colC:
 with colD:
     current_scale = st.number_input("Current scale (→ A)", value=0.001, step=0.001, format="%.6f", help="0.001 if column is in mA")
 
-with colE:
-    t_mode = st.selectbox("Time source", ["column", "constant"], index=0)
-
 time_col = None
-const_dt = None
-if t_mode == "column":
-    opts = list(df.columns)
-    time_col = st.selectbox("Datetime column", options=opts, index=0)
-elif t_mode == "constant":
-    const_dt = st.number_input("Constant sample period (seconds)", value=1.0, min_value=1e-6, step=0.1)
+opts = list(df.columns)
+time_col = st.selectbox("Datetime column", options=opts, index=0)
 
 # Compute columns
 try:
@@ -394,9 +372,7 @@ try:
         i_col=i_col,
         voltage_scale=voltage_scale,   # mV→V default 0.001
         current_scale=current_scale,   # mA→A default 0.001
-        time_source=t_mode,
         time_col=time_col,
-        constant_dt_s=const_dt
     )
     st.success("Added: **Power_W** and **Energy_Wh**")
 except Exception as e:
