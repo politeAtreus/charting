@@ -362,7 +362,7 @@ with colD:
 
 time_col = None
 opts = list(df.columns)
-time_col = st.selectbox("Datetime column", options=opts, index=0)
+time_col = st.selectbox("Time column", options=opts, index="Time(s)" in opts and opts.index("Time(s)") or 0)
 
 # Compute columns
 try:
