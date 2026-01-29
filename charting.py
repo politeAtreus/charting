@@ -51,6 +51,7 @@ def add_power_energy(
     t = pd.to_numeric(out[time_col], errors = "coerce")
     dt_s = t.diff().fillna(0)   # time difference (delta) in seconds
     dt_h = dt_s / 3600.0    # convert seconds to hours
+    out["Time(h)"] = out["Time(s)"] / 3600.0
 
     # 3. Energy integration (Wh) via trapezoidal rule
     power = out["Power_W"].astype(float)
@@ -406,7 +407,7 @@ all_cols = list(df.columns)
 
 c1, c2, c3, c4 = st.columns([1.2, 1.2, 1.2, 1])
 with c1:
-    x_choice = st.selectbox("X axis", ["(index)"] + all_cols, index= "Time(s)" in all_cols and all_cols.index("Time(s)") + 1 or 0)
+    x_choice = st.selectbox("X axis", ["(index)"] + all_cols, index= "Time(h)" in all_cols and all_cols.index("Time(h)") + 1 or 0)
 with c2:
     y_choices = st.multiselect("Y axis (numeric)", num_cols)
 with c3:
