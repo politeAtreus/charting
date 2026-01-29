@@ -19,6 +19,66 @@ import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 
+# -------------------- Power/Energy helpers --------------------
+def _guess_col(df, candidates):
+    cols = {c.lower(): c for c in df.columns}
+    for name in candidates:
+        if name.lower() in cols:
+            return cols[name.lower()]
+    # fuzzy match
+    for k, orig in cols.items():
+        if any(name.lower() in k for name in candidates):
+            return orig
+    return None
+
+def add_power_energy(
+        df: pd.DataFrame,
+        v_col: str,
+        i_col: str,
+        current_scale: float = 0.001,
+        voltage_scale: float = 0.001,
+        time_source: str = "auto",
+        time_col: str | None = None,
+        constant_dt_s: float | None = None,
+        ) -> pd.DataFrame:
+    out = df.copy()
+
+    # 1. Power (W) = V * I
+    v = pd.to_numeric(out[v_col], errors = "coerce") * float(voltage_scale)
+    i = pd.to_numeric(out[i_col], errors = "coerce") * float(current_scale)
+    out["Power_W"] = v * i
+
+    # 2. Build dt in hours
+    if time_source == "auto":
+        if isinstance(out.index, pd.DatetimeIndex):
+            t = out.index.to_series()
+        else:
+            # pick the first date-time like col
+            dt_cols = [c for c in out.columns if pd.api.types.is_datetime64_any_dtype(out[c])]
+            t = out[dt_cols[0]] if dt_cols else None
+    
+    elif time_source == "column" and time_col:
+        t = out[time_col]
+    
+    else:
+        t = None
+
+    if t is not None and pd.api.types.is_datetime64_any_dtype(t):
+        dt_h = t.diff().dt.total_seconds().fillna(0) / 3600.0
+    else:
+        # constant sample period to fallback on (sec)
+        if not constant_dt_s:
+            constant_dt_s = 1.0 # default 1 second
+        dt_h = pd.Series(constant_dt_s / 3600.0, index=out.index)
+
+    # 3. Energy integration (Wh) via trapezoidal rule
+    power = out["Power_W"].astype(float)
+    power_prev = power.shift(1).fillna(power)
+    dE = 0.5 * (power + power_prev) * dt_h
+    out["Energy_Wh"] = dE.cumsum().ffill().fillna(0)
+
+    return out
+
 # -------------------- Coercion helpers --------------------
 _BOOL_MAP = {
     "true": 1, "false": 0,
@@ -111,7 +171,8 @@ def read_flexi_csv_from_bytes(
     header_option: str = "auto",
     force_delim: Optional[str] = None,
     percent_as_fraction: bool = False
-) -> pd.DataFrame:
+    ) -> pd.DataFrame:
+
     delim = force_delim if force_delim else sniff_delimiter(data)
 
     # Read raw as strings. Prefer fast C engine; fall back to Python engine.
@@ -121,24 +182,22 @@ def read_flexi_csv_from_bytes(
         sep=delim,
         dtype=str,
         engine="c",              # try C engine first
-        on_bad_lines="skip",     # works on modern pandas with C engine; else we’ll retry
-        encoding_errors="ignore" # robust to odd bytes
+        on_bad_lines="skip"      # works on modern pandas with C engine; else we'll retry
     )
 
     try:
-        df_raw = pd.read_csv(io.BytesIO(data), **read_kwargs)
+        df_raw = pd.read_csv(io.BytesIO(data), encoding="utf-8", errors="ignore", **read_kwargs)
     except Exception:
         # Fallback: Python engine (handles weird CSVs better)
-        read_kwargs_fallback = dict(
-            header=None,
-            sep=delim,
-            dtype=str,
-            engine="python",
-            on_bad_lines="skip",
-            encoding_errors="ignore"
+        read_kwargs_fallback: dict = {
+            "header": None,
+            "sep": delim,
+            "dtype": object,
+            "engine": "python",
+            "on_bad_lines": "skip"
             # NO low_memory here
-        )
-        df_raw = pd.read_csv(io.BytesIO(data), **read_kwargs_fallback)
+        }
+        df_raw = pd.read_csv(io.BytesIO(data), encoding="utf-8", errors="ignore", **read_kwargs_fallback)
 
     # drop fully empty rows
     mask_empty = df_raw.apply(lambda r: r.isna().all() or (r.astype(str).str.strip() == "").all(), axis=1)
@@ -299,6 +358,54 @@ except Exception as e:
 st.success(f"Parsed: {df.shape[0]} rows × {df.shape[1]} columns")
 st.caption(f"Numeric: {len(df.select_dtypes(include=[np.number]).columns)} | "
            f"Datetime-like: {sum(pd.api.types.is_datetime64_any_dtype(df[c]) for c in df.columns)}")
+
+st.markdown("### Derived metrics (Power & Energy)")
+
+# Guess defaults
+default_v = _guess_col(df, ["battVolts", "volts", "voltage", "V", "mV"])
+default_i = _guess_col(df, ["battCurrent", "current", "I", "amps", "mA"])
+
+colA, colB, colC, colD, colE = st.columns([1.5, 1.5, 1.1, 1.1, 1.4])
+
+with colA:
+    v_col = st.selectbox("Voltage column", options=list(df.columns), index=(list(df.columns).index(default_v) if default_v in df.columns else 0))
+
+with colB:
+    i_col = st.selectbox("Current column", options=list(df.columns), index=(list(df.columns).index(default_i) if default_i in df.columns else 0))
+    
+with colC:
+    voltage_scale = st.number_input("Voltage scale (→ V)", value=0.001, step=0.001, format="%.6f", help="0.001 if column is in mV")
+
+with colD:
+    current_scale = st.number_input("Current scale (→ A)", value=0.001, step=0.001, format="%.6f", help="0.001 if column is in mA")
+
+with colE:
+    t_mode = st.selectbox("Time source", ["auto", "column", "constant"], index=0)
+
+time_col = None
+const_dt = None
+if t_mode == "column":
+    dt_candidates = [c for c in df.columns if pd.api.types.is_datetime64_any_dtype(df[c])]
+    opts = dt_candidates if dt_candidates else list(df.columns)
+    time_col = st.selectbox("Datetime column", options=opts, index=0)
+elif t_mode == "constant":
+    const_dt = st.number_input("Constant sample period (seconds)", value=1.0, min_value=1e-6, step=0.1)
+
+# Compute columns
+try:
+    df = add_power_energy(
+        df,
+        v_col=v_col,
+        i_col=i_col,
+        voltage_scale=voltage_scale,   # mV→V default 0.001
+        current_scale=current_scale,   # mA→A default 0.001
+        time_source=t_mode,
+        time_col=time_col,
+        constant_dt_s=const_dt
+    )
+    st.success("Added: **Power_W** and **Energy_Wh**")
+except Exception as e:
+    st.warning(f"Could not add derived metrics: {e}")
 
 with st.expander("Data preview", expanded=True):
     st.dataframe(df.head(200), width = "stretch")
