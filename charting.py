@@ -376,13 +376,12 @@ with colD:
     current_scale = st.number_input("Current scale (→ A)", value=0.001, step=0.001, format="%.6f", help="0.001 if column is in mA")
 
 with colE:
-    t_mode = st.selectbox("Time source", ["auto", "column", "constant"], index=0)
+    t_mode = st.selectbox("Time source", ["column", "constant"], index=0)
 
 time_col = None
 const_dt = None
 if t_mode == "column":
-    dt_candidates = [c for c in df.columns if pd.api.types.is_datetime64_any_dtype(df[c])]
-    opts = dt_candidates if dt_candidates else list(df.columns)
+    opts = list(df.columns)
     time_col = st.selectbox("Datetime column", options=opts, index=0)
 elif t_mode == "constant":
     const_dt = st.number_input("Constant sample period (seconds)", value=1.0, min_value=1e-6, step=0.1)
