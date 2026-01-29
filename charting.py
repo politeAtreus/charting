@@ -346,7 +346,7 @@ st.markdown("### Derived metrics (Power & Energy)")
 default_v = _guess_col(df, ["battVoltage", "volts", "voltage", "V", "mV"])
 default_i = _guess_col(df, ["battCurrent", "current", "I", "amps", "mA"])
 
-colA, colB, colC, colD, colE = st.columns([1.5, 1.5, 1.0, 1.0])
+colA, colB, colC, colD = st.columns([1.5, 1.5, 1.0, 1.0])
 
 with colA:
     v_col = st.selectbox("Voltage column", options=list(df.columns), index=(list(df.columns).index(default_v) if default_v and default_v in df.columns else 0))
