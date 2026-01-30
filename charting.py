@@ -236,14 +236,14 @@ def process_csv(data: bytes, num: int) -> pd.DataFrame:
     """This function takes a single CSV file, does parsing, coercion, and derived metrics."""
     try:
         df = read_flexi_csv_from_bytes(data=data, header_option=header_opt, force_delim=delim_val, percent_as_fraction=percent_as_fraction)
-        st.success(f"Successfully parsed Hydrophone {num} data: {df.shape[0]} rows × {df.shape[1]} columns")
+        st.toast(f"Successfully parsed Hydrophone {num} data: {df.shape[0]} rows × {df.shape[1]} columns")
     except Exception as e:
         st.error(f"Error parsing Hydrophone {num} data: {e}")
         st.stop()
     if show_raw:
         with st.expander(f"Hydrophone {num} Raw (first 4 KB)", expanded=False):
             st.code(data_1[:4096].decode("utf-8", errors="ignore"))
-    st.success(f"Parsed: {df.shape[0]} rows × {df.shape[1]} columns")
+    st.toast(f"Parsed: {df.shape[0]} rows × {df.shape[1]} columns")
     # Compute derived energy and power columns
     try:
         df = add_power_energy(
@@ -254,11 +254,11 @@ def process_csv(data: bytes, num: int) -> pd.DataFrame:
             current_scale=0.001,   # mA→A default 0.001
             time_col="Time(s)",
         )
-        st.success("Added: **Power_W** and **Energy_Wh**")
+        st.toast("Added: **Power_W** and **Energy_Wh**")
     except Exception as e:
         st.warning(f"Could not add derived metrics: {e}")
     df = df.rename(columns={col: f"{num}_{col}" for col in df.columns})
-    st.success(f"Hydrophone {num} columns renamed with '{num}_' prefix.")
+    st.toast(f"Hydrophone {num} columns renamed with '{num}_' prefix.")
 
     # Reset index to default integer index
     df.reset_index(drop=True, inplace=True)
@@ -375,7 +375,7 @@ if uploaded_file_2:
 # If both files are uploaded, MERGE THEM
 if uploaded_file_1 and uploaded_file_2:
     df = pd.concat([df_1, df_2], axis=1)
-    st.success(f"Merged DataFrame shape: {df.shape[0]} rows × {df.shape[1]} columns")
+    st.toast(f"Merged DataFrame shape: {df.shape[0]} rows × {df.shape[1]} columns")
 else:
     # Use whichever dataframe is uploaded
     df = df_1 if uploaded_file_1 else (df_2 if uploaded_file_2 else None)
