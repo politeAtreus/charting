@@ -20,11 +20,6 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 # -------------------- Power/Energy helpers --------------------
-def _guess_col(df, candidates):
-    cols = {c.lower(): c for c in df.columns}
-    for name in candidates:
-        if name.lower() in cols:
-            return cols[name.lower()]
 
 def add_power_energy(
         df: pd.DataFrame,
@@ -237,6 +232,38 @@ def summarize_df(df: pd.DataFrame) -> dict:
     summary["categorical_tops"] = cat_top
     return summary
 
+def process_csv(data: bytes, num: int) -> pd.DataFrame:
+    """This function takes a single CSV file, does parsing, coercion, and derived metrics."""
+    try:
+        df = read_flexi_csv_from_bytes(data=data, header_option=header_opt, force_delim=delim_val, percent_as_fraction=percent_as_fraction)
+        st.success(f"Successfully parsed Hydrophone {num} data: {df.shape[0]} rows × {df.shape[1]} columns")
+    except Exception as e:
+        st.error(f"Error parsing Hydrophone {num} data: {e}")
+        st.stop()
+    if show_raw:
+        with st.expander(f"Hydrophone {num} Raw (first 4 KB)", expanded=False):
+            st.code(data_1[:4096].decode("utf-8", errors="ignore"))
+    st.success(f"Parsed: {df.shape[0]} rows × {df.shape[1]} columns")
+    # Compute derived energy and power columns
+    try:
+        df = add_power_energy(
+            df,
+            v_col="battVoltage",
+            i_col="battCurrent",
+            voltage_scale=0.001,   # mV→V default 0.001
+            current_scale=0.001,   # mA→A default 0.001
+            time_col="Time(s)",
+        )
+        st.success("Added: **Power_W** and **Energy_Wh**")
+    except Exception as e:
+        st.warning(f"Could not add derived metrics: {e}")
+    df = df.rename(columns={col: f"{num}_{col}" for col in df.columns})
+    st.success(f"Hydrophone {num} columns renamed with '{num}_' prefix.")
+
+    # Reset index to default integer index
+    df.reset_index(drop=True, inplace=True)
+    return df
+
 # -------------------- Plotly charting --------------------
 def build_plotly_dual_axis(
     df: pd.DataFrame,
@@ -329,73 +356,38 @@ with st.sidebar:
     percent_as_fraction = st.checkbox("Interpret % as fractions (45% → 0.45)", value=False)
     show_raw = st.checkbox("Show raw file head (debug)", value=False)
 
-uploaded = st.file_uploader("Upload a CSV / TXT / LOG", type=["csv", "txt", "log"])
-if not uploaded:
+# Upload two hydrophone CSV files
+uploaded_file_1 = st.file_uploader("Upload Hydrophone 1 CSV", type=["csv"])
+uploaded_file_2 = st.file_uploader("Upload Hydrophone 2 CSV", type=["csv"])
+
+if not uploaded_file_1 and not uploaded_file_2:
     st.info("Upload a file to begin.")
     st.stop()
 
-data = uploaded.read()
-if show_raw:
-    with st.expander("Raw (first 4 KB)", expanded=False):
-        st.code(data[:4096].decode("utf-8", errors="ignore"))
+if uploaded_file_1:
+    data_1 = uploaded_file_1.read()
+    df_1 = process_csv(data=data_1, num=1)
 
-try:
-    df = read_flexi_csv_from_bytes(
-        data=data,
-        header_option=header_opt,
-        force_delim=delim_val,
-        percent_as_fraction=percent_as_fraction
-    )
-except Exception as e:
-    st.error(f"Failed to parse CSV: {e}")
-    st.stop()
-
-st.success(f"Parsed: {df.shape[0]} rows × {df.shape[1]} columns")
-st.caption(f"Numeric: {len(df.select_dtypes(include=[np.number]).columns)} | "
-           f"Datetime-like: {sum(pd.api.types.is_datetime64_any_dtype(df[c]) for c in df.columns)}")
-
-st.markdown("### Derived metrics (Power & Energy)")
-
-# Guess defaults
-default_v = _guess_col(df, ["battVoltage", "volts", "voltage", "V", "mV"])
-default_i = _guess_col(df, ["battCurrent", "current", "I", "amps", "mA"])
-
-colA, colB, colC, colD = st.columns([1.5, 1.5, 1.0, 1.0])
-
-with colA:
-    v_col = st.selectbox("Voltage column", options=list(df.columns), index=(list(df.columns).index(default_v) if default_v and default_v in df.columns else 0))
-
-with colB:
-    i_col = st.selectbox("Current column", options=list(df.columns), index=(list(df.columns).index(default_i) if default_i and default_i in df.columns else 0))
+if uploaded_file_2:
+    data_2 = uploaded_file_2.read()
+    df_2 = process_csv(data=data_2, num=2)
     
-with colC:
-    voltage_scale = st.number_input("Voltage scale (→ V)", value=0.001, step=0.001, format="%.6f", help="0.001 if column is in mV")
+# If both files are uploaded, MERGE THEM
+if uploaded_file_1 and uploaded_file_2:
+    df = pd.concat([df_1, df_2], axis=1)
+    st.success(f"Merged DataFrame shape: {df.shape[0]} rows × {df.shape[1]} columns")
+else:
+    # Use whichever dataframe is uploaded
+    df = df_1 if uploaded_file_1 else (df_2 if uploaded_file_2 else None)
 
-with colD:
-    current_scale = st.number_input("Current scale (→ A)", value=0.001, step=0.001, format="%.6f", help="0.001 if column is in mA")
+if df is not None:
+    with st.expander("Data preview", expanded=True):
+        st.dataframe(df.head(200), width = "stretch", hide_index=True)
 
-time_col = None
-opts = list(df.columns)
-time_col = st.selectbox("Time column", options=opts, index="Time(s)" in opts and opts.index("Time(s)") or 0)
-
-# Compute columns
-try:
-    df = add_power_energy(
-        df,
-        v_col=v_col,
-        i_col=i_col,
-        voltage_scale=voltage_scale,   # mV→V default 0.001
-        current_scale=current_scale,   # mA→A default 0.001
-        time_col=time_col,
-    )
-    st.success("Added: **Power_W** and **Energy_Wh**")
-except Exception as e:
-    st.warning(f"Could not add derived metrics: {e}")
-
-with st.expander("Data preview", expanded=True):
-    st.dataframe(df.head(200), width = "stretch")
-
-summary = summarize_df(df)
+    summary = summarize_df(df)
+else:
+    st.error("No data available to summarize.")
+    st.stop()
 col1, col2 = st.columns([4,1])
 with col1:
     if summary.get("numeric_overview") is not None:
