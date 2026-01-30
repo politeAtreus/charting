@@ -71,16 +71,19 @@ def coerce_scalar(val: str, percent_as_fraction: bool = False):
     if s == "" or s.lower() in {"nan", "none", "null"}:
         return np.nan
 
+    # Handle boolean-like values
     lo = s.lower()
     if lo in _BOOL_MAP:
         return _BOOL_MAP[lo]
 
+    # Handle percentage values (e.g., 45%)
     pct = s.endswith("%")
     core = s[:-1].strip() if pct else s
 
-    core = re.sub(r"^[\$€£₹]\s*", "", core)              # currency
-    core = re.sub(r"(?<=\d),(?=\d{3}\b)", "", core)      # 1,234 -> 1234
-    if re.match(r"^[+-]?[\d\.]+[a-zA-Z]+$", core):       # 12V -> 12
+    # Remove currency symbols
+    core = re.sub(r"^[\$€£₹]\s*", "", core)
+    core = re.sub(r"(?<=\d),(?=\d{3}\b)", "", core)  # 1,234 -> 1234
+    if re.match(r"^[+-]?[\d\.]+[a-zA-Z]+$", core):   # 12V -> 12
         core = re.sub(r"[a-zA-Z]+$", "", core)
 
     try:
@@ -91,10 +94,12 @@ def coerce_scalar(val: str, percent_as_fraction: bool = False):
     except Exception:
         pass
 
+    # If it's not a number, try converting to datetime
     try:
         return pd.to_datetime(s, errors="raise", format="mixed", cache=True)
     except Exception:
         return np.nan
+
 
 def coerce_series(sr: pd.Series, percent_as_fraction: bool = False) -> Tuple[pd.Series, Optional[str]]:
     # Try to coerce to datetime first
@@ -105,23 +110,23 @@ def coerce_series(sr: pd.Series, percent_as_fraction: bool = False) -> Tuple[pd.
     # Now try coercion to numeric
     coerced = sr.map(lambda x: coerce_scalar(x, percent_as_fraction))
     num = pd.to_numeric(coerced, errors="coerce")
-    
+
     # If most of the values are numeric, return as numeric
     if num.notna().mean() > 0.6:
         return num, "numeric"
 
     # If not numeric, check if it's a string or categorical data
     unique_vals = sr.dropna().unique()
+
+    # If there are only a small number of unique values, treat it as categorical
     if len(unique_vals) <= 20:
-        # If there are a small number of unique values, treat it as categorical
         mapping = {k: i for i, k in enumerate(sorted(map(str, unique_vals)))}
         enc = sr.map(lambda x: mapping.get(str(x), np.nan))
         enc.attrs["label_mapping"] = mapping
         return enc, "categorical"
     
-    return sr, "string"  # Otherwise, return as raw string
-
-
+    # Otherwise, just treat it as a string (non-numeric, non-datetime column)
+    return sr, "string"
 
 # -------------------- CSV helpers --------------------
 def sniff_delimiter(sample_bytes: bytes) -> str:
@@ -165,30 +170,29 @@ def read_flexi_csv_from_bytes(
     read_kwargs: dict = {
         "header": None,
         "sep": delim,
-        "dtype": object,    # change to dtype=object for mixed data types
-        "engine": "c",              # try C engine first
-        "on_bad_lines": "skip"      # works on modern pandas with C engine; else we'll retry
+        "dtype": object,  # Using object for mixed types
+        "engine": "c",    # try C engine first
+        "on_bad_lines": "skip"  # skip bad lines
     }
 
     try:
         df_raw = pd.read_csv(io.BytesIO(data), encoding="utf-8", **read_kwargs)
     except Exception:
-        # Fallback: Python engine (handles weird CSVs better)
+        # Fallback to Python engine if C engine fails
         read_kwargs_fallback: dict = {
             "header": None,
             "sep": delim,
-            "dtype": object,
+            "dtype": object,  # dtype=object for mixed data types
             "engine": "python",
             "on_bad_lines": "skip"
-            # NO low_memory here
         }
         df_raw = pd.read_csv(io.BytesIO(data), encoding="utf-8", **read_kwargs_fallback)
 
-    # drop fully empty rows
+    # Drop fully empty rows
     mask_empty = df_raw.apply(lambda r: r.isna().all() or (r.astype(str).str.strip() == "").all(), axis=1)
     df_raw = df_raw.loc[~mask_empty].reset_index(drop=True)
 
-    # header handling
+    # Header handling
     if header_option == "auto":
         header_row = infer_header_row(df_raw)
     elif header_option == "none":
@@ -207,7 +211,7 @@ def read_flexi_csv_from_bytes(
         data_df = df_raw.copy()
         data_df.columns = [f"col_{i}" for i in range(data_df.shape[1])]
 
-    # coerce columns
+    # Coerce columns (numeric, string, or categorical)
     coerced_cols, col_kinds = {}, {}
     for c in data_df.columns:
         coerced, kind = coerce_series(data_df[c], percent_as_fraction=percent_as_fraction)
@@ -215,8 +219,11 @@ def read_flexi_csv_from_bytes(
         col_kinds[c] = kind
     df = pd.DataFrame(coerced_cols)
 
+    # Drop any columns that are completely empty
     df = df.dropna(axis=1, how="all")
     return df
+
+# -------------------- Data summarization --------------------
 
 def summarize_df(df: pd.DataFrame) -> dict:
     summary = {}
