@@ -97,23 +97,31 @@ def coerce_scalar(val: str, percent_as_fraction: bool = False):
         return np.nan
 
 def coerce_series(sr: pd.Series, percent_as_fraction: bool = False) -> Tuple[pd.Series, Optional[str]]:
+    # Try to coerce to datetime first
     dt = pd.to_datetime(sr, errors="coerce", format="mixed", cache=True)
     if dt.notna().mean() > 0.8 and dt.notna().mean() >= sr.notna().mean() * 0.8:
         return dt, "datetime"
 
+    # Now try coercion to numeric
     coerced = sr.map(lambda x: coerce_scalar(x, percent_as_fraction))
     num = pd.to_numeric(coerced, errors="coerce")
+    
+    # If most of the values are numeric, return as numeric
     if num.notna().mean() > 0.6:
         return num, "numeric"
 
+    # If not numeric, check if it's a string or categorical data
     unique_vals = sr.dropna().unique()
-    if 0 < len(unique_vals) <= 20:
+    if len(unique_vals) <= 20:
+        # If there are a small number of unique values, treat it as categorical
         mapping = {k: i for i, k in enumerate(sorted(map(str, unique_vals)))}
         enc = sr.map(lambda x: mapping.get(str(x), np.nan))
         enc.attrs["label_mapping"] = mapping
-        return enc, "numeric"
+        return enc, "categorical"
+    
+    return sr, "string"  # Otherwise, return as raw string
 
-    return num, "numeric"
+
 
 # -------------------- CSV helpers --------------------
 def sniff_delimiter(sample_bytes: bytes) -> str:
@@ -157,7 +165,7 @@ def read_flexi_csv_from_bytes(
     read_kwargs: dict = {
         "header": None,
         "sep": delim,
-        "dtype": str,
+        "dtype": object,    # change to dtype=object for mixed data types
         "engine": "c",              # try C engine first
         "on_bad_lines": "skip"      # works on modern pandas with C engine; else we'll retry
     }
@@ -206,12 +214,6 @@ def read_flexi_csv_from_bytes(
         coerced_cols[c] = coerced
         col_kinds[c] = kind
     df = pd.DataFrame(coerced_cols)
-
-    # prefer datetime column as index
-    dt_candidates = [c for c, k in col_kinds.items() if k == "datetime"]
-    if dt_candidates:
-        best = max(dt_candidates, key=lambda c: df[c].notna().sum())
-        df = df.set_index(best, drop=False)
 
     df = df.dropna(axis=1, how="all")
     return df
@@ -417,7 +419,7 @@ with c1:
     x_choice = st.selectbox(
         "X axis",
         ["(index)"] + all_cols,
-        index=("Time(h)" in all_cols and all_cols.index("Time(h)") + 1) or 0
+        index=("1_Time(h)" in all_cols and all_cols.index("1_Time(h)") + 1) or 0
     )
 
 with c2:
