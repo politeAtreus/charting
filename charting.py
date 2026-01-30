@@ -457,7 +457,7 @@ fig = build_plotly_dual_axis(
 )
 
 # Display the plot
-st.plotly_chart(fig, use_container_width=True, config={"displaylogo": False})
+st.plotly_chart(fig, width='stretch', config={"displaylogo": False})
 
 # ---- Downloads
 st.subheader("Downloads")
