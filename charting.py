@@ -279,6 +279,17 @@ def process_csv(data: bytes, num: int) -> pd.DataFrame:
     df.reset_index(drop=True, inplace=True)
     return df
 
+def _clean_for_log(x_series, y_series, need_log_x: bool, need_log_y: bool):
+        """Return filtered x,y where log axes are valid (>0). Keeps NaNs out too."""
+        x_s = pd.to_numeric(pd.Series(x_series), errors="coerce")
+        y_s = pd.to_numeric(pd.Series(y_series), errors="coerce")
+        mask = x_s.notna() & y_s.notna()
+        if need_log_x:
+            mask &= x_s > 0
+        if need_log_y:
+            mask &= y_s > 0
+        return x_s[mask], y_s[mask]
+
 # -------------------- Plotly charting --------------------
 def build_plotly_dual_axis(
     df: pd.DataFrame,
@@ -286,7 +297,10 @@ def build_plotly_dual_axis(
     y_left: list[str],
     y_right: list[str],
     kind: str,
-    title: str
+    title: str,
+    log_x: bool = False,
+    log_y_left: bool = False,
+    log_y_right: bool = False,
     ) -> go.Figure:
     """
     Build a Plotly chart with dual y-axes (left and right).
@@ -302,58 +316,81 @@ def build_plotly_dual_axis(
     else:
         x_vals = np.arange(len(df))
         x_label = "index"
+    
+    # Coerce X to numeric if we're doing log-x
+    if log_x:
+        x_num = pd.to_numeric(pd.Series(x_vals), errors="coerce")
+        x_vals = x_num
 
     fig = go.Figure()
 
-    # LEFT AXIS (e.g., Power)
+    # LEFT AXIS traces
     for c in y_left:
+        if c not in df.columns:
+            continue
+
+        if log_x or log_y_left:
+            x_plot, y_plot = _clean_for_log(x_vals, df[c], log_x, log_y_left)
+        else:
+            x_plot, y_plot = x_vals, df[c]
+
         fig.add_trace(
             go.Scatter(
-                x=x_vals,
-                y=df[c],
+                x=x_plot,
+                y=y_plot,
                 name=c,
                 mode="lines" if kind == "line" else "markers",
-                yaxis="y1"
+                yaxis="y1",
             )
         )
 
-    # RIGHT AXIS (e.g., Energy)
+    # RIGHT AXIS traces
     for c in y_right:
+        if c not in df.columns:
+            continue
+
+        if log_x or log_y_right:
+            x_plot, y_plot = _clean_for_log(x_vals, df[c], log_x, log_y_right)
+        else:
+            x_plot, y_plot = x_vals, df[c]
+
         fig.add_trace(
             go.Scatter(
-                x=x_vals,
-                y=df[c],
+                x=x_plot,
+                y=y_plot,
                 name=c,
                 mode="lines" if kind == "line" else "markers",
-                yaxis="y2"
+                yaxis="y2",
             )
         )
 
     # Update layout with dual axes
     fig.update_layout(
         title=title,
-        xaxis=dict(title=x_label),
+        xaxis=dict(title=x_label, type="log" if log_x else "linear"),
         yaxis=dict(
             title=" • ".join(y_left) if y_left else "Value",
             side="left",
-            showgrid=True
+            showgrid=True,
+            type="log" if log_y_left else "linear",
         ),
         yaxis2=dict(
             title=" • ".join(y_right),
             side="right",
             overlaying="y",
-            showgrid=False
+            showgrid=False,
+            type="log" if log_y_right else "linear",
         ),
         hovermode="x unified",
         margin=dict(l=60, r=60, t=60, b=40),
         legend=dict(
-            orientation="h",  # horizontal legend
+            orientation="h",
             yanchor="bottom",
             y=-0.4,
             xanchor="center",
             x=0.5,
-            title="Click to toggle • Double-click to isolate"
-        )
+            title="Click to toggle • Double-click to isolate",
+        ),
     )
 
     return fig
@@ -365,12 +402,23 @@ st.title("CSV Plotter")
 
 with st.sidebar:
     st.header("Parse Options")
+
+    # Header and delimiter options
     header_opt = st.selectbox("Header row", ["auto", "none"] + [str(i) for i in range(1,20)], index=0)
     force_delim = st.selectbox("Delimiter", ["(auto)", ",", ";", "\\t", "|"], index=0)
     delim_val = None if force_delim == "(auto)" else ("\t" if force_delim == "\\t" else force_delim)
     percent_as_fraction = st.checkbox("Interpret % as fractions (45% → 0.45)", value=False)
+
+    # Debug options
     show_raw = st.checkbox("Show raw file head (debug)", value=False)
+
+    # Power/Energy option
     enable_power_energy = st.checkbox("Compute Power/Energy, requires V, I and T.", value=False)
+
+    # Log axis options
+    log_x = st.checkbox("X-axis Log Mode", value=False)
+    log_y_left = st.checkbox("Left Y-axis Log Mode", value=False)
+    log_y_right = st.checkbox("Right Y-axis Log Mode", value=False)
 
 # Upload two hydrophone CSV files
 uploaded_file_1 = st.file_uploader("Upload Hydrophone 1 CSV", type=["csv"])
@@ -448,7 +496,10 @@ fig = build_plotly_dual_axis(
     y_left=y_left,
     y_right=y_right,
     kind=kind,
-    title="Time Series Chart"
+    title="Plotly Chart",
+    log_x=log_x,
+    log_y_left=log_y_left,
+    log_y_right=log_y_right,
 )
 
 # Display the plot
