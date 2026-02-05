@@ -161,7 +161,7 @@ def read_flexi_csv_from_bytes(
     header_option: str = "auto",
     force_delim: Optional[str] = None,
     percent_as_fraction: bool = False
-    ) -> pd.DataFrame:
+    ) -> tuple[pd.DataFrame, list[str]]:
 
     delim = force_delim if force_delim else sniff_delimiter(data)
 
@@ -188,6 +188,17 @@ def read_flexi_csv_from_bytes(
 
     st.caption(f"Header row: {header_row + 1 if header_row is not None else 'None'}; Delimiter: '{delim}'; len: {len(df_raw)} rows")
 
+    # ---------- metadata extraction ----------
+    metadata_lines: list[str] = []
+    if header_row is not None and header_row > 0:
+        meta_df = df_raw.iloc[:header_row].copy()
+
+        # join non-empty cells per row into one readable line
+        for _, row in meta_df.iterrows():
+            parts = [str(v).strip() for v in row.tolist() if v is not None and str(v).strip() != "" and str(v).strip().lower() != "nan"]
+            if parts:
+                metadata_lines.append(" | ".join(parts))
+
     if header_row is not None and 0 <= header_row < len(df_raw):
         columns = df_raw.iloc[header_row].astype(str).str.strip()
         data_df = df_raw.iloc[header_row + 1:].reset_index(drop=True)
@@ -206,7 +217,7 @@ def read_flexi_csv_from_bytes(
 
     # Drop any columns that are completely empty
     df = df.dropna(axis=1, how="all")
-    return df
+    return df, metadata_lines
 
 # -------------------- Data summarization --------------------
 
@@ -229,11 +240,17 @@ def summarize_df(df: pd.DataFrame) -> dict:
 def process_csv(data: bytes, num: int) -> pd.DataFrame:
     """This function takes a single CSV file, does parsing, coercion, and derived metrics."""
     try:
-        df = read_flexi_csv_from_bytes(data=data, header_option=header_opt, force_delim=delim_val, percent_as_fraction=percent_as_fraction)
+        df, metadata_lines = read_flexi_csv_from_bytes(data=data, header_option=header_opt, force_delim=delim_val, percent_as_fraction=percent_as_fraction)
         st.toast(f"Successfully parsed csv {num} data: {df.shape[0]} rows × {df.shape[1]} columns")
     except Exception as e:
         st.error(f"Error parsing csv {num} data: {e}")
         st.stop()
+    
+    # --- display metadata ---
+    if metadata_lines:
+        with st.expander(f"Metadata (csv {num})", expanded=False):
+            st.text("\n".join(metadata_lines))
+    
     if show_raw:
         with st.expander(f"csv {num} Raw (first 4 KB)", expanded=False):
             st.code(data[:4096].decode("utf-8", errors="ignore"))
