@@ -188,7 +188,7 @@ def read_flexi_csv_from_bytes(
 
     st.caption(f"Header row: {header_row + 1 if header_row is not None else 'None'}; Delimiter: '{delim}'; len: {len(df_raw)} rows")
 
-    if header_row is not None and 0 < header_row < len(df_raw):
+    if header_row is not None and 0 <= header_row < len(df_raw):
         columns = df_raw.iloc[header_row].astype(str).str.strip()
         data_df = df_raw.iloc[header_row + 1:].reset_index(drop=True)
         data_df.columns = columns
