@@ -276,15 +276,15 @@ def build_plotly_dual_axis(
     - `y_left` and `y_right` are lists of column names to plot on the left and right Y axes, respectively.
     """
     # Resolve X
-    if x is None and isinstance(df.index, pd.DatetimeIndex):
-        x_vals = df.index
-        x_label = df.index.name or "index"
-    elif x is None:
-        x_vals = np.arange(len(df))
+    if x in (None, "(index)"):
+        x_vals = df.index if df.index.name is not None else np.arange(len(df))
         x_label = "index"
-    else:
+    elif x in df.columns:
         x_vals = df[x]
         x_label = x
+    else:
+        x_vals = np.arange(len(df))
+        x_label = "index"
 
     fig = go.Figure()
 
