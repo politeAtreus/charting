@@ -165,28 +165,9 @@ def read_flexi_csv_from_bytes(
 
     delim = force_delim if force_delim else sniff_delimiter(data)
 
-    # Read raw as strings. Prefer fast C engine; fall back to Python engine.
-    # IMPORTANT: Don't pass low_memory when engine="python".
-    read_kwargs: dict = {
-        "header": None,
-        "sep": delim,
-        "dtype": object,  # Using object for mixed types
-        "engine": "c",    # try C engine first
-        "on_bad_lines": "skip"  # skip bad lines
-    }
+    df_raw = pd.read_csv(io.BytesIO(data), delimiter=delim, header=None, dtype=str, engine="python")
 
-    try:
-        df_raw = pd.read_csv(io.BytesIO(data), encoding="utf-8", **read_kwargs)
-    except Exception:
-        # Fallback to Python engine if C engine fails
-        read_kwargs_fallback: dict = {
-            "header": None,
-            "sep": delim,
-            "dtype": object,  # dtype=object for mixed data types
-            "engine": "python",
-            "on_bad_lines": "skip"
-        }
-        df_raw = pd.read_csv(io.BytesIO(data), encoding="utf-8", **read_kwargs_fallback)
+    st.text(f"Raw read: {df_raw.shape[0]} rows × {df_raw.shape[1]} columns")
 
     # Drop fully empty rows
     mask_empty = df_raw.apply(lambda r: r.isna().all() or (r.astype(str).str.strip() == "").all(), axis=1)
@@ -195,15 +176,19 @@ def read_flexi_csv_from_bytes(
     # Header handling
     if header_option == "auto":
         header_row = infer_header_row(df_raw)
+        if header_row is None:
+            header_row = 1  # Default to row 1 if no header found
     elif header_option == "none":
         header_row = None
     else:
         try:
-            header_row = int(header_option)
+            header_row = int(header_option) - 1  # Convert to 0-based index
         except Exception:
             header_row = None
 
-    if header_row is not None and 0 <= header_row < len(df_raw):
+    st.caption(f"Header row: {header_row + 1 if header_row is not None else 'None'}; Delimiter: '{delim}'; len: {len(df_raw)} rows")
+
+    if header_row is not None and 0 < header_row < len(df_raw):
         columns = df_raw.iloc[header_row].astype(str).str.strip()
         data_df = df_raw.iloc[header_row + 1:].reset_index(drop=True)
         data_df.columns = columns
@@ -245,27 +230,31 @@ def process_csv(data: bytes, num: int) -> pd.DataFrame:
     """This function takes a single CSV file, does parsing, coercion, and derived metrics."""
     try:
         df = read_flexi_csv_from_bytes(data=data, header_option=header_opt, force_delim=delim_val, percent_as_fraction=percent_as_fraction)
-        st.toast(f"Successfully parsed Hydrophone {num} data: {df.shape[0]} rows × {df.shape[1]} columns")
+        st.toast(f"Successfully parsed csv {num} data: {df.shape[0]} rows × {df.shape[1]} columns")
     except Exception as e:
-        st.error(f"Error parsing Hydrophone {num} data: {e}")
+        st.error(f"Error parsing csv {num} data: {e}")
         st.stop()
     if show_raw:
-        with st.expander(f"Hydrophone {num} Raw (first 4 KB)", expanded=False):
-            st.code(data_1[:4096].decode("utf-8", errors="ignore"))
+        with st.expander(f"csv {num} Raw (first 4 KB)", expanded=False):
+            st.code(data[:4096].decode("utf-8", errors="ignore"))
     st.toast(f"Parsed: {df.shape[0]} rows × {df.shape[1]} columns")
+
     # Compute derived energy and power columns
-    try:
-        df = add_power_energy(
-            df,
-            v_col="battVoltage",
-            i_col="battCurrent",
-            voltage_scale=0.001,   # mV→V default 0.001
-            current_scale=0.001,   # mA→A default 0.001
-            time_col="Time(s)",
-        )
-        st.toast("Added: **Power_W** and **Energy_Wh**")
-    except Exception as e:
-        st.warning(f"Could not add derived metrics: {e}")
+    if enable_power_energy:
+        try:
+            df = add_power_energy(
+                df,
+                v_col="battVoltage",
+                i_col="battCurrent",
+                voltage_scale=0.001,   # mV→V default 0.001
+                current_scale=0.001,   # mA→A default 0.001
+                time_col="Time(s)",
+            )
+            st.toast("Added: **Power_W** and **Energy_Wh**")
+        except Exception as e:
+            st.warning(f"Could not add derived metrics: {e}")
+    
+    # Prefix columns with hydrophone number
     df = df.rename(columns={col: f"{num}_{col}" for col in df.columns})
     st.toast(f"Hydrophone {num} columns renamed with '{num}_' prefix.")
 
@@ -354,16 +343,17 @@ def build_plotly_dual_axis(
 
 
 # -------------------- UI --------------------
-st.set_page_config(page_title="CSV Plotter", layout="wide")
+st.set_page_config(page_title="CSV Plotter", layout="wide", initial_sidebar_state="expanded")
 st.title("CSV Plotter")
 
 with st.sidebar:
     st.header("Parse Options")
-    header_opt = st.selectbox("Header row", ["auto", "none", "0", "1", "2", "3", "4", "5"], index=0)
+    header_opt = st.selectbox("Header row", ["auto", "none"] + [str(i) for i in range(1,20)], index=0)
     force_delim = st.selectbox("Delimiter", ["(auto)", ",", ";", "\\t", "|"], index=0)
     delim_val = None if force_delim == "(auto)" else ("\t" if force_delim == "\\t" else force_delim)
     percent_as_fraction = st.checkbox("Interpret % as fractions (45% → 0.45)", value=False)
     show_raw = st.checkbox("Show raw file head (debug)", value=False)
+    enable_power_energy = st.checkbox("Compute Power/Energy, requires V, I and T.", value=False)
 
 # Upload two hydrophone CSV files
 uploaded_file_1 = st.file_uploader("Upload Hydrophone 1 CSV", type=["csv"])
@@ -423,25 +413,13 @@ all_cols = list(df.columns)
 
 c1, c2, c3, c4 = st.columns([1.2, 1.2, 1.2, 1])
 with c1:
-    x_choice = st.selectbox(
-        "X axis",
-        ["(index)"] + all_cols,
-        index=("1_Time(h)" in all_cols and all_cols.index("1_Time(h)") + 1) or 0
-    )
+    x_choice = st.selectbox("X axis", ["(index)"] + all_cols, index = 0)   # Default to index
 
 with c2:
-    y_left = st.multiselect(
-        "Left Y axis",
-        num_cols,
-        default=[c for c in ["Power_W"] if c in num_cols]  # Pre-select Power if available
-    )
+    y_left = st.multiselect("Left Y axis", num_cols)  # No pre-selection
 
 with c3:
-    y_right = st.multiselect(
-        "Right Y axis",
-        num_cols,
-        default=[c for c in ["Energy_Wh"] if c in num_cols]  # Pre-select Energy if available
-    )
+    y_right = st.multiselect("Right Y axis", num_cols)  # No pre-selection
 
 with c4:
     kind = st.selectbox("Chart type", ["line", "scatter"], index=0)
