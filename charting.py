@@ -167,8 +167,6 @@ def read_flexi_csv_from_bytes(
 
     df_raw = pd.read_csv(io.BytesIO(data), delimiter=delim, header=None, dtype=str, engine="python")
 
-    st.text(f"Raw read: {df_raw.shape[0]} rows × {df_raw.shape[1]} columns")
-
     # Drop fully empty rows
     mask_empty = df_raw.apply(lambda r: r.isna().all() or (r.astype(str).str.strip() == "").all(), axis=1)
     df_raw = df_raw.loc[~mask_empty].reset_index(drop=True)
@@ -185,8 +183,6 @@ def read_flexi_csv_from_bytes(
             header_row = int(header_option) - 1  # Convert to 0-based index
         except Exception:
             header_row = None
-
-    st.caption(f"Header row: {header_row + 1 if header_row is not None else 'None'}; Delimiter: '{delim}'; len: {len(df_raw)} rows")
 
     # ---------- metadata extraction ----------
     metadata_lines: list[str] = []
@@ -241,7 +237,7 @@ def process_csv(data: bytes, num: int) -> pd.DataFrame:
     """This function takes a single CSV file, does parsing, coercion, and derived metrics."""
     try:
         df, metadata_lines = read_flexi_csv_from_bytes(data=data, header_option=header_opt, force_delim=delim_val, percent_as_fraction=percent_as_fraction)
-        st.toast(f"Successfully parsed csv {num} data: {df.shape[0]} rows × {df.shape[1]} columns")
+        st.caption(f"CSV {num}: {df.shape[0]} rows × {df.shape[1]} columns | Delimiter: '{delim_val or 'auto'}' | Header: '{header_opt}'")
     except Exception as e:
         st.error(f"Error parsing csv {num} data: {e}")
         st.stop()
