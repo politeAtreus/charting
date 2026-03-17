@@ -19,12 +19,6 @@ import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 
-# CSV COLUMNS for CARPi csv writing reference
-CSV_COLUMNS = ["battStatus", "battPercent", "battPercentdev", "charge", "capacity", "battCurrent", "battVoltage", "battTemp", "boardVoltage", "microprocVoltage",
-               "version", "serial_number", "firmware_version", "build_date", "device_type", "status", "enquire_version", "hydrophone_sensitivity_dB", "temp", "humid", 
-               "hardware_revision", "link_type", "firmware_release", "sync_status", "time_status", "model", "ts_version", "offset_ns", "pps_count", "time_since_pps", 
-               "system_time", "accelX_g", "accelY_g", "accelZ_g", "magX_mGauss", "magY_mGauss", "magZ_mGauss", "Time(s)", "Status", "_cnc_error"]
-
 # -------------------- Power/Energy helpers --------------------
 
 def add_power_energy(
@@ -168,7 +162,6 @@ def read_flexi_csv_from_bytes(
     header_option: str = "auto",
     force_delim: Optional[str] = None,
     percent_as_fraction: bool = False,
-    known_columns: Optional[list] = None,
     ) -> tuple[pd.DataFrame, list[str]]:
 
     STRING_COLUMNS = {"Status", "_cnc_error"}
@@ -181,43 +174,37 @@ def read_flexi_csv_from_bytes(
     mask_empty = df_raw.apply(lambda r: r.isna().all() or (r.astype(str).str.strip() == "").all(), axis=1)
     df_raw = df_raw.loc[~mask_empty].reset_index(drop=True)
 
-    # If known columns are provided, use them and skip header inference
-    if known_columns is not None:
-        data_df = df_raw.iloc[1:].reset_index(drop=True)  # Skip the header row
-        data_df.columns = known_columns[:data_df.shape[1]]
-        metadata_lines = []
+    # Header handling
+    if header_option == "auto":
+        header_row = infer_header_row(df_raw)
+        if header_row is None:
+            header_row = 1  # Default to row 1 if no header found
+    elif header_option == "none":
+        header_row = None
     else:
-        # Header handling
-        if header_option == "auto":
-            header_row = infer_header_row(df_raw)
-            if header_row is None:
-                header_row = 1  # Default to row 1 if no header found
-        elif header_option == "none":
+        try:
+            header_row = int(header_option) - 1  # Convert to 0-based index
+        except Exception:
             header_row = None
-        else:
-            try:
-                header_row = int(header_option) - 1  # Convert to 0-based index
-            except Exception:
-                header_row = None
 
-        # ---------- metadata extraction ----------
-        metadata_lines: list[str] = []
-        if header_row is not None and header_row > 0:
-            meta_df = df_raw.iloc[:header_row].copy()
+    # ---------- metadata extraction ----------
+    metadata_lines: list[str] = []
+    if header_row is not None and header_row > 0:
+        meta_df = df_raw.iloc[:header_row].copy()
 
-            # join non-empty cells per row into one readable line
-            for _, row in meta_df.iterrows():
-                parts = [str(v).strip() for v in row.tolist() if v is not None and str(v).strip() != "" and str(v).strip().lower() != "nan"]
-                if parts:
-                    metadata_lines.append(" | ".join(parts))
+        # join non-empty cells per row into one readable line
+        for _, row in meta_df.iterrows():
+            parts = [str(v).strip() for v in row.tolist() if v is not None and str(v).strip() != "" and str(v).strip().lower() != "nan"]
+            if parts:
+                metadata_lines.append(" | ".join(parts))
 
-        if header_row is not None and 0 <= header_row < len(df_raw):
-            columns = df_raw.iloc[header_row].astype(str).str.strip()
-            data_df = df_raw.iloc[header_row + 1:].reset_index(drop=True)
-            data_df.columns = columns
-        else:
-            data_df = df_raw.copy()
-            data_df.columns = [f"col_{i}" for i in range(data_df.shape[1])]
+    if header_row is not None and 0 <= header_row < len(df_raw):
+        columns = df_raw.iloc[header_row].astype(str).str.strip()
+        data_df = df_raw.iloc[header_row + 1:].reset_index(drop=True)
+        data_df.columns = columns
+    else:
+        data_df = df_raw.copy()
+        data_df.columns = [f"col_{i}" for i in range(data_df.shape[1])]
 
     # Coerce columns (numeric, string, or categorical)
     coerced_cols, col_kinds = {}, {}
@@ -254,14 +241,12 @@ def summarize_df(df: pd.DataFrame) -> dict:
     return summary
 
 def process_csv(data: bytes, num: int, header_opt: str, delim_val, percent_as_fraction: bool, 
-                show_raw: bool, enable_power_energy: bool, use_carpi_columns: bool = False) -> pd.DataFrame:
+                show_raw: bool, enable_power_energy: bool) -> pd.DataFrame:
     """This function takes a single CSV file, does parsing, coercion, and derived metrics."""
-
-    known_cols = CSV_COLUMNS if use_carpi_columns else None
 
     try:
         df, metadata_lines = read_flexi_csv_from_bytes(data=data, header_option=header_opt, force_delim=delim_val, 
-                                                       percent_as_fraction=percent_as_fraction, known_columns=known_cols)
+                                                       percent_as_fraction=percent_as_fraction)
         st.caption(f"CSV {num}: {df.shape[0]} rows × {df.shape[1]} columns | Delimiter: '{delim_val or 'auto'}' | Header: '{header_opt}'")
     except Exception as e:
         st.error(f"Error parsing csv {num} data: {e}")
@@ -429,7 +414,6 @@ with st.sidebar:
     force_delim = st.selectbox("Delimiter", ["(auto)", ",", ";", "\\t", "|"], index=0)
     delim_val = None if force_delim == "(auto)" else ("\t" if force_delim == "\\t" else force_delim)
     percent_as_fraction = st.checkbox("Interpret % as fractions (45% → 0.45)", value=False)
-    use_carpi_columns = st.checkbox("CARPI file (use CARPi csv schema)", value=False)
 
     # Debug options
     show_raw = st.checkbox("Show raw file head (debug)", value=False)
@@ -459,7 +443,6 @@ if uploaded_file_1:
         percent_as_fraction=percent_as_fraction,
         show_raw=show_raw,
         enable_power_energy=enable_power_energy,
-        use_carpi_columns=use_carpi_columns,
     )
 
 if uploaded_file_2:
@@ -471,7 +454,6 @@ if uploaded_file_2:
         percent_as_fraction=percent_as_fraction,
         show_raw=show_raw,
         enable_power_energy=enable_power_energy,
-        use_carpi_columns=use_carpi_columns,
     )
     
 # If both files are uploaded, MERGE THEM
