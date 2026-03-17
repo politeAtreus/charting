@@ -183,7 +183,7 @@ def read_flexi_csv_from_bytes(
 
     # If known columns are provided, use them and skip header inference
     if known_columns is not None:
-        data_df = df_raw.copy()
+        data_df = df_raw.iloc[1:].reset_index(drop=True)  # Skip the header row
         data_df.columns = known_columns[:data_df.shape[1]]
         metadata_lines = []
     else:
