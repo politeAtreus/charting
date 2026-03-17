@@ -40,6 +40,7 @@ def add_power_energy(
     # Check if the time column exists
     if time_col not in df.columns:
         st.error(f"The required time column '{time_col}' is missing in the CSV data.")
+        return df
 
     out = df.copy()
 
@@ -199,24 +200,24 @@ def read_flexi_csv_from_bytes(
             except Exception:
                 header_row = None
 
-    # ---------- metadata extraction ----------
-    metadata_lines: list[str] = []
-    if header_row is not None and header_row > 0:
-        meta_df = df_raw.iloc[:header_row].copy()
+        # ---------- metadata extraction ----------
+        metadata_lines: list[str] = []
+        if header_row is not None and header_row > 0:
+            meta_df = df_raw.iloc[:header_row].copy()
 
-        # join non-empty cells per row into one readable line
-        for _, row in meta_df.iterrows():
-            parts = [str(v).strip() for v in row.tolist() if v is not None and str(v).strip() != "" and str(v).strip().lower() != "nan"]
-            if parts:
-                metadata_lines.append(" | ".join(parts))
+            # join non-empty cells per row into one readable line
+            for _, row in meta_df.iterrows():
+                parts = [str(v).strip() for v in row.tolist() if v is not None and str(v).strip() != "" and str(v).strip().lower() != "nan"]
+                if parts:
+                    metadata_lines.append(" | ".join(parts))
 
-    if header_row is not None and 0 <= header_row < len(df_raw):
-        columns = df_raw.iloc[header_row].astype(str).str.strip()
-        data_df = df_raw.iloc[header_row + 1:].reset_index(drop=True)
-        data_df.columns = columns
-    else:
-        data_df = df_raw.copy()
-        data_df.columns = [f"col_{i}" for i in range(data_df.shape[1])]
+        if header_row is not None and 0 <= header_row < len(df_raw):
+            columns = df_raw.iloc[header_row].astype(str).str.strip()
+            data_df = df_raw.iloc[header_row + 1:].reset_index(drop=True)
+            data_df.columns = columns
+        else:
+            data_df = df_raw.copy()
+            data_df.columns = [f"col_{i}" for i in range(data_df.shape[1])]
 
     # Coerce columns (numeric, string, or categorical)
     coerced_cols, col_kinds = {}, {}
@@ -477,6 +478,7 @@ if uploaded_file_2:
 if uploaded_file_1 and uploaded_file_2:
     df = pd.concat([df_1, df_2], axis=1)
     st.toast(f"Merged DataFrame shape: {df.shape[0]} rows × {df.shape[1]} columns")
+    st.caption("Rows aligned positionally, not by time. Row N from file 1 is paired with row N from file 2.")
 else:
     # Use whichever dataframe is uploaded
     df = df_1 if uploaded_file_1 else (df_2 if uploaded_file_2 else None)
