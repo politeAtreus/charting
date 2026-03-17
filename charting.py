@@ -163,6 +163,8 @@ def read_flexi_csv_from_bytes(
     percent_as_fraction: bool = False
     ) -> tuple[pd.DataFrame, list[str]]:
 
+    STRING_COLUMNS = {"Status", "_cnc_error"}
+
     delim = force_delim if force_delim else sniff_delimiter(data)
 
     df_raw = pd.read_csv(io.BytesIO(data), delimiter=delim, header=None, dtype=str, engine="python")
@@ -206,9 +208,13 @@ def read_flexi_csv_from_bytes(
     # Coerce columns (numeric, string, or categorical)
     coerced_cols, col_kinds = {}, {}
     for c in data_df.columns:
-        coerced, kind = coerce_series(data_df[c], percent_as_fraction=percent_as_fraction)
-        coerced_cols[c] = coerced
-        col_kinds[c] = kind
+        if c in STRING_COLUMNS:
+            coerced_cols[c] = data_df[c].astype(str)
+            col_kinds[c] = "string"
+        else:
+            coerced, kind = coerce_series(data_df[c], percent_as_fraction=percent_as_fraction)
+            coerced_cols[c] = coerced
+            col_kinds[c] = kind
     df = pd.DataFrame(coerced_cols)
 
     # Drop any columns that are completely empty
