@@ -485,6 +485,21 @@ if df is not None:
     with st.expander("Data preview", expanded=True):
         st.dataframe(df.head(200), width = "stretch", hide_index=True)
 
+    # Check for any Status column (accounts for 1_Status, 2_Status prefixes)
+    status_cols = [c for c in df.columns if c.endswith("_Status")]
+    if status_cols:
+        # Use the first one to get unique stage values
+        all_stages = df[status_cols[0]].dropna().unique().tolist()
+        selected_stages = st.multiselect(
+            "Filter by Soak Stage",
+            options=all_stages,
+            default=all_stages,  # all selected by default
+            help="Filter rows to only show selected soak test stages"
+        )
+        if selected_stages:
+            df = df[df[status_cols[0]].isin(selected_stages)]
+        st.caption(f"Showing {len(df)} rows after stage filter.")
+
     summary = summarize_df(df)
 else:
     st.error("No data available to summarize.")
