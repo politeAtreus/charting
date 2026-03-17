@@ -239,7 +239,7 @@ def summarize_df(df: pd.DataFrame) -> dict:
     summary["categorical_tops"] = cat_top
     return summary
 
-def process_csv(data: bytes, num: int) -> pd.DataFrame:
+def process_csv(data: bytes, num: int, header_opt: str, delim_val, percent_as_fraction: bool, show_raw: bool, enable_power_energy: bool) -> pd.DataFrame:
     """This function takes a single CSV file, does parsing, coercion, and derived metrics."""
     try:
         df, metadata_lines = read_flexi_csv_from_bytes(data=data, header_option=header_opt, force_delim=delim_val, percent_as_fraction=percent_as_fraction)
@@ -432,11 +432,25 @@ if not uploaded_file_1 and not uploaded_file_2:
 
 if uploaded_file_1:
     data_1 = uploaded_file_1.read()
-    df_1 = process_csv(data=data_1, num=1)
+    df_1 = process_csv(
+        data=data_1, num=1,
+        header_opt=header_opt,
+        delim_val=delim_val,
+        percent_as_fraction=percent_as_fraction,
+        show_raw=show_raw,
+        enable_power_energy=enable_power_energy
+    )
 
 if uploaded_file_2:
     data_2 = uploaded_file_2.read()
-    df_2 = process_csv(data=data_2, num=2)
+    df_2 = process_csv(
+        data=data_2, num=2,
+        header_opt=header_opt,
+        delim_val=delim_val,
+        percent_as_fraction=percent_as_fraction,
+        show_raw=show_raw,
+        enable_power_energy=enable_power_energy
+    )
     
 # If both files are uploaded, MERGE THEM
 if uploaded_file_1 and uploaded_file_2:
