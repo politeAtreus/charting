@@ -25,6 +25,8 @@ def add_power_energy(
         df: pd.DataFrame,
         v_col: str,
         i_col: str,
+        p_out_col: str = "Power_W",
+        e_out_col: str = "Energy_Wh",
         current_scale: float = 0.001,
         voltage_scale: float = 0.001,
         time_col: str = "Time(s)",      # The column that has time in seconds
@@ -41,7 +43,7 @@ def add_power_energy(
     # 1. Power (W) = V * I
     v = pd.to_numeric(out[v_col], errors = "coerce") * float(voltage_scale) # Convert to V
     i = pd.to_numeric(out[i_col], errors = "coerce") * float(current_scale) # Convert to A
-    out["Power_W"] = v * i
+    out[p_out_col] = v * i
 
     # 2. Build dt in hours
     t = pd.to_numeric(out[time_col], errors = "coerce")
@@ -53,7 +55,7 @@ def add_power_energy(
     power = out["Power_W"].astype(float)
     power_prev = power.shift(1).fillna(power)   # previous power value, handle first row
     dE = 0.5 * (power + power_prev) * dt_h  # trapezoidal area for each interval is (P1 + P2)/2 * dt
-    out["Energy_Wh"] = dE.cumsum().fillna(0)
+    out[e_out_col] = dE.cumsum().fillna(0)
 
     return out
 
@@ -275,10 +277,28 @@ def process_csv(data: bytes, num: int, header_opt: str, delim_val, percent_as_fr
                 voltage_scale=0.001,   # mV→V default 0.001
                 current_scale=0.001,   # mA→A default 0.001
                 time_col="Time(s)",
+                p_out_col="Power_W",
+                e_out_col="Energy_Wh"
             )
             st.toast("Added: **Power_W** and **Energy_Wh**")
         except Exception as e:
             st.warning(f"Could not add derived metrics: {e}")
+        
+        # Try to add powe rand energy from dmm measurements
+        try:
+            df = add_power_energy(
+                df=df,
+                v_col="dmm_V",
+                i_col="dmm_A",
+                voltage_scale=1.0,   # DMM already in V
+                current_scale=1.0,   # DMM already in A
+                time_col="Time(s)",
+                p_out_col="DMM_Power_W",
+                e_out_col="DMM_Energy_Wh"
+            )
+            st.toast("Added: **DMM_Power_W** and **DMM_Energy_Wh**")
+        except Exception as e:
+            st.info(f"No DMM columns found or error computing DMM power/energy: {e}")
     
     # Prefix columns with hydrophone number
     df = df.rename(columns={col: f"{num}_{col}" for col in df.columns})
