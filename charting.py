@@ -167,7 +167,7 @@ def read_flexi_csv_from_bytes(
     percent_as_fraction: bool = False,
     ) -> tuple[pd.DataFrame, list[str]]:
 
-    STRING_COLUMNS = {"Status", "_cnc_error"}
+    STRING_COLUMNS = {"Status",}
 
     delim = force_delim if force_delim else sniff_delimiter(data)
 
