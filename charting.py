@@ -338,7 +338,9 @@ def build_plotly_dual_axis(
         if c not in df.columns:
             continue
 
-        if log_x or log_y_left:
+        is_numeric = pd.api.types.is_numeric_dtype(df[c])
+
+        if log_x or log_y_left and is_numeric:
             x_plot, y_plot = _clean_for_log(x_vals, df[c], log_x, log_y_left)
         else:
             x_plot, y_plot = x_vals, df[c]
@@ -358,7 +360,9 @@ def build_plotly_dual_axis(
         if c not in df.columns:
             continue
 
-        if log_x or log_y_right:
+        is_numeric = pd.api.types.is_numeric_dtype(df[c])
+
+        if log_x or log_y_right and is_numeric:
             x_plot, y_plot = _clean_for_log(x_vals, df[c], log_x, log_y_right)
         else:
             x_plot, y_plot = x_vals, df[c]
@@ -520,10 +524,10 @@ with c1:
     x_choice = st.selectbox("X axis", ["(index)"] + all_cols, index = 0)   # Default to index
 
 with c2:
-    y_left = st.multiselect("Left Y axis", num_cols)  # No pre-selection
+    y_left = st.multiselect("Left Y axis", all_cols)  # No pre-selection
 
 with c3:
-    y_right = st.multiselect("Right Y axis", num_cols)  # No pre-selection
+    y_right = st.multiselect("Right Y axis", all_cols)  # No pre-selection
 
 with c4:
     kind = st.selectbox("Chart type", ["line", "scatter"], index=0)
