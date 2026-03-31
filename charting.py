@@ -112,8 +112,11 @@ def coerce_series(sr: pd.Series, percent_as_fraction: bool = False) -> Tuple[pd.
     coerced = sr.map(lambda x: coerce_scalar(x, percent_as_fraction))
     num = pd.to_numeric(coerced, errors="coerce")
 
-    # If most of the values are numeric, return as numeric
-    if num.notna().mean() > 0.6:
+    # of rows that have *any* value, are most of them numeric?
+    non_null_mask = sr.notna() & ~(sr.astype(str).str.strip().str.lower().isin({"nan", "none", "null", ""}))
+    populated_count = non_null_mask.sum()
+
+    if populated_count == 0 or num[non_null_mask].notna().mean() > 0.6:
         return num, "numeric"
 
     # If not numeric, check if it's a string or categorical data
