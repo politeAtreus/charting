@@ -400,12 +400,17 @@ def build_plotly_dual_axis(
     # Update layout with dual axes
     fig.update_layout(
         title=title,
-        xaxis=dict(title=x_label, type="log" if log_x else "linear"),
+        xaxis=dict(
+            title=x_label, 
+            type="log" if log_x else "linear",
+            nticks=60,
+        ),
         yaxis=dict(
             title=" • ".join(y_left) if y_left else "Value",
             side="left",
             showgrid=True,
             type="log" if log_y_left else "linear",
+            nticks=20,
         ),
         yaxis2=dict(
             title=" • ".join(y_right),
@@ -413,6 +418,7 @@ def build_plotly_dual_axis(
             overlaying="y",
             showgrid=False,
             type="log" if log_y_right else "linear",
+            nticks=20,
         ),
         hovermode="x unified",
         margin=dict(l=60, r=60, t=60, b=40),
@@ -492,7 +498,31 @@ else:
     # Use whichever dataframe is uploaded
     df = df_1 if uploaded_file_1 else (df_2 if uploaded_file_2 else None)
 
+with st.sidebar:
+    st.markdown("--------")
+    st.subheader("Column Scaling")
+    st.caption("Multiply columns by some factor to view mismatched units easily.")
+
+    num_scalers = st.number_input("Number of scalers", min_value=0, max_value=20, value=0, step=1)
+    scaling_rules = []
+    if num_scalers > 0:
+        all_cols_for_scaling = list(df.columns) if df is not None else []
+        for i in range(num_scalers):
+            sc1, sc2 = st.columns([2, 1])
+            with sc1:
+                col_name = st.selectbox(f"Column {i+1}", options=[""] + all_cols_for_scaling, key=f"scale_col_{i}")
+            with sc2:
+                factor = st.number_input(f"x factor", value=1.0, format="%.6g", key=f"scale_factor_{i}")
+            if col_name:
+                scaling_rules.append((col_name, factor))
+
 if df is not None:
+    # Apply scaling rules
+    for col_name, factor in scaling_rules:
+        if col_name in df.columns and pd.api.types.is_numeric_dtype(df[col_name]):
+            df[col_name] = df[col_name] * factor
+            st.toast(f"Scaled column '{col_name}' by factor {factor}.")
+
     with st.expander("Data preview", expanded=True):
         st.dataframe(df.head(200), width = "stretch", hide_index=True)
 
@@ -502,7 +532,7 @@ if df is not None:
         # Use the first one to get unique stage values
         all_stages = df[status_cols[0]].dropna().unique().tolist()
         selected_stages = st.multiselect(
-            "Filter by Soak Stage",
+            "Filter by Status",
             options=all_stages,
             default=all_stages,  # all selected by default
             help="Filter rows to only show selected soak test stages"
