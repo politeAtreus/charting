@@ -20,6 +20,11 @@ import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 
+def extract_hydrophone_id(filename: str) -> str:
+    """Extract serial number from 'Hydrophone_6956_20260415_132938.csv' → '6956'."""
+    match = re.search(r"Hydrophone_(\d+)_", filename)
+    return match.group(1) if match else filename.split(".")[0]
+
 # -------------------- Power/Energy helpers --------------------
 
 def add_power_energy(
@@ -269,7 +274,7 @@ def summarize_df(df: pd.DataFrame) -> dict:
     summary["categorical_tops"] = cat_top
     return summary
 
-def process_csv(data: bytes, num: int, header_opt: str, delim_val, percent_as_fraction: bool, 
+def process_csv(data: bytes, num: str, header_opt: str, delim_val, percent_as_fraction: bool, 
                 show_raw: bool, enable_power_energy: bool) -> pd.DataFrame:
     """This function takes a single CSV file, does parsing, coercion, and derived metrics."""
 
@@ -483,48 +488,42 @@ with st.sidebar:
     log_y_left = st.checkbox("Left Y-axis Log Mode", value=False)
     log_y_right = st.checkbox("Right Y-axis Log Mode", value=False)
 
-# Upload two hydrophone CSV files
-uploaded_file_1 = st.file_uploader("Upload Hydrophone 1 CSV", type=["csv"])
-uploaded_file_2 = st.file_uploader("Upload Hydrophone 2 CSV", type=["csv"])
+# Upload up to 8 CSV files
+st.markdown("### Upload CSV Files")
+NUM_FILES = 8
+uploaded_files = []
+cols = st.columns(4)
+for i in range(NUM_FILES):
+    with cols[i % 4]:
+        f = st.file_uploader(f"Hydrophone {i+1}", type=["csv"], key=f"file_{i}")
+        uploaded_files.append(f)
 
-if not uploaded_file_1 and not uploaded_file_2:
+dfs = []
+for i, uploaded_file in enumerate(uploaded_files):
+    if uploaded_file is not None:
+        t0 = time.perf_counter()
+        data = uploaded_file.read()
+        hydro_id = extract_hydrophone_id(uploaded_file.name)
+        df_n = process_csv(
+            data=data, num=hydro_id,   # pass string ID instead of integer index
+            header_opt=header_opt,
+            delim_val=delim_val,
+            percent_as_fraction=percent_as_fraction,
+            show_raw=show_raw,
+            enable_power_energy=enable_power_energy,
+        )
+        st.caption(f"⏱ Hydrophone {hydro_id} parsed in {time.perf_counter() - t0:.2f}s")
+        dfs.append(df_n)
+
+if not dfs:
     st.info("Upload a file to begin.")
     st.stop()
 
-if uploaded_file_1:
-    t0 = time.perf_counter()
-    data_1 = uploaded_file_1.read()
-    df_1 = process_csv(
-        data=data_1, num=1,
-        header_opt=header_opt,
-        delim_val=delim_val,
-        percent_as_fraction=percent_as_fraction,
-        show_raw=show_raw,
-        enable_power_energy=enable_power_energy,
-    )
-    st.caption(f"⏱ File 1 parsed in {time.perf_counter() - t0:.2f}s")
-
-if uploaded_file_2:
-    t0 = time.perf_counter()
-    data_2 = uploaded_file_2.read()
-    df_2 = process_csv(
-        data=data_2, num=2,
-        header_opt=header_opt,
-        delim_val=delim_val,
-        percent_as_fraction=percent_as_fraction,
-        show_raw=show_raw,
-        enable_power_energy=enable_power_energy,
-    )
-    st.caption(f"⏱ File 2 parsed in {time.perf_counter() - t0:.2f}s")
-    
-# If both files are uploaded, MERGE THEM
-if uploaded_file_1 and uploaded_file_2:
-    df = pd.concat([df_1, df_2], axis=1)
-    st.toast(f"Merged DataFrame shape: {df.shape[0]} rows × {df.shape[1]} columns")
-    st.caption("Rows aligned positionally, not by time. Row N from file 1 is paired with row N from file 2.")
+if len(dfs) > 1:
+    df = pd.concat(dfs, axis=1)
+    st.caption(f"Merged {len(dfs)} files — {df.shape[0]} rows × {df.shape[1]} columns. Rows aligned positionally.")
 else:
-    # Use whichever dataframe is uploaded
-    df = df_1 if uploaded_file_1 else (df_2 if uploaded_file_2 else None)
+    df = dfs[0]
 
 with st.sidebar:
     st.markdown("--------")
