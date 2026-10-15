@@ -53,15 +53,19 @@ def add_power_energy(
 
     # 2. Build dt in hours
     t = pd.to_numeric(out[time_col], errors = "coerce")
-    dt_s = t.diff().fillna(0)   # time difference (delta) in seconds
+    dt_s = t.diff().clip(lower=0).fillna(0)
+    # Dropped invalid CSV rows leave index gaps. Do not integrate across outages.
+    dt_s = dt_s.where(out.index.to_series().diff().eq(1), 0)
     dt_h = dt_s / 3600.0    # convert seconds to hours
-    out["Time(h)"] = out["Time(s)"] / 3600.0
+    out["Time(h)"] = t / 3600.0
 
     # 3. Energy integration (Wh) via trapezoidal rule
-    power = out["Power_W"].astype(float)
-    power_prev = power.shift(1).fillna(power)   # previous power value, handle first row
+    power = out[p_out_col].astype(float)
+    if energy_from_abs_power:
+        power = power.abs()
+    power_prev = power.shift(1)   # previous power value; a missing sample stays missing
     dE = 0.5 * (power + power_prev) * dt_h  # trapezoidal area for each interval is (P1 + P2)/2 * dt
-    out[e_out_col] = dE.cumsum().fillna(0)
+    out[e_out_col] = dE.fillna(0).cumsum()
 
     return out
 
@@ -198,7 +202,7 @@ def read_flexi_csv_from_bytes(
     percent_as_fraction: bool = False,
     ) -> tuple[pd.DataFrame, list[str]]:
 
-    STRING_COLUMNS = {"Status",}
+    STRING_COLUMNS = {"status", "battstatus"}
 
     delim = force_delim if force_delim else sniff_delimiter(data)
 
@@ -240,11 +244,21 @@ def read_flexi_csv_from_bytes(
         data_df = df_raw.copy()
         data_df.columns = [f"col_{i}" for i in range(data_df.shape[1])]
 
+    # Reject failed battery reads before coercion can encode battStatus as a number.
+    # Keep the original index here so energy integration can recognize outages.
+    invalid_rows = pd.Series(False, index=data_df.index)
+    for c in data_df.columns:
+        if str(c).lstrip("\ufeff").strip().casefold() == "battstatus":
+            status = data_df[c].astype("string").str.strip().str.casefold()
+            invalid_rows |= status.eq("no data available").fillna(False)
+    skipped_rows = int(invalid_rows.sum())
+    data_df = data_df.loc[~invalid_rows]
+
     # Coerce columns (numeric, string, or categorical)
     coerced_cols, col_kinds = {}, {}
     for c in data_df.columns:
-        if c in STRING_COLUMNS:
-            coerced_cols[c] = data_df[c].astype(str)
+        if str(c).casefold() in STRING_COLUMNS:
+            coerced_cols[c] = data_df[c].astype("string").str.strip()
             col_kinds[c] = "string"
         else:
             coerced, kind = coerce_series(data_df[c], percent_as_fraction=percent_as_fraction)
@@ -253,7 +267,9 @@ def read_flexi_csv_from_bytes(
     df = pd.DataFrame(coerced_cols)
 
     # Drop any columns that are completely empty
-    df = df.dropna(axis=1, how="all")
+    if not df.empty:
+        df = df.dropna(axis=1, how="all")
+    df.attrs["skipped_no_data_rows"] = skipped_rows
     return df, metadata_lines
 
 # -------------------- Data summarization --------------------
@@ -295,6 +311,17 @@ def process_csv(data: bytes, num: str, header_opt: str, delim_val, percent_as_fr
         with st.expander(f"csv {num} Raw (first 4 KB)", expanded=False):
             st.code(data[:4096].decode("utf-8", errors="ignore"))
     st.toast(f"Parsed: {df.shape[0]} rows × {df.shape[1]} columns")
+    skipped_rows = df.attrs.get("skipped_no_data_rows", 0)
+    if skipped_rows:
+        st.caption(f"Hydrophone {num}: skipped {skipped_rows} rows with battStatus = 'No Data Available'.")
+
+    # Offer both elapsed-time units even when Power/Energy is disabled.
+    if "Time(s)" in df.columns:
+        df["Time(s)"] = pd.to_numeric(df["Time(s)"], errors="coerce")
+        df["Time(h)"] = df["Time(s)"] / 3600.0
+    elif "Time(h)" in df.columns:
+        df["Time(h)"] = pd.to_numeric(df["Time(h)"], errors="coerce")
+        df["Time(s)"] = df["Time(h)"] * 3600.0
 
     # Compute derived energy and power columns
     if enable_power_energy:
@@ -337,16 +364,85 @@ def process_csv(data: bytes, num: str, header_opt: str, delim_val, percent_as_fr
     df.reset_index(drop=True, inplace=True)
     return df
 
+
+def prepare_comparison_frame(
+    df: pd.DataFrame,
+    hydro_id: str,
+    selected_stages: Optional[list[str]] = None,
+    alignment: str = "Recorded time",
+    anchor_stage: Optional[str] = None,
+    offset_hours: float = 0.0,
+) -> tuple[pd.DataFrame, Optional[float]]:
+    """Filter this hydrophone's stages, then shift its own time columns.
+
+    Return the shifted frame and the time (hours) used as zero, or None if
+    there is no numeric time. A stage anchor comes from the original valid
+    data, even if the stage itself is hidden by the filter.
+    """
+    status_col = f"{hydro_id}_Status"
+    out = df.copy()
+    if selected_stages is not None and status_col in out.columns:
+        out = out.loc[out[status_col].isin(selected_stages)].copy()
+
+    seconds_col, hours_col = f"{hydro_id}_Time(s)", f"{hydro_id}_Time(h)"
+    time_col = seconds_col if seconds_col in df.columns else hours_col
+    if time_col not in df.columns or out.empty:
+        return out.reset_index(drop=True), None
+    units_per_hour = 3600.0 if time_col == seconds_col else 1.0
+    origin_hours = 0.0
+    if alignment == "Start of selected data":
+        times = pd.to_numeric(out[time_col], errors="coerce").dropna()
+        if times.empty:
+            return out.reset_index(drop=True), None
+        origin_hours = float(times.iloc[0]) / units_per_hour
+    elif alignment == "Start of a soak stage":
+        if status_col not in df.columns:
+            raise ValueError("no Status column for the selected stage anchor")
+        times = pd.to_numeric(
+            df.loc[df[status_col].eq(anchor_stage), time_col], errors="coerce"
+        ).dropna()
+        if times.empty:
+            raise ValueError(f"no valid time for stage '{anchor_stage}'")
+        origin_hours = float(times.iloc[0]) / units_per_hour
+
+    for col, scale in [(seconds_col, 3600.0), (hours_col, 1.0)]:
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce") + (offset_hours - origin_hours) * scale
+    return out.reset_index(drop=True), origin_hours
+
+
+def time_axes_for_traces(
+    frames: dict[str, pd.DataFrame], x: Optional[str]
+) -> dict[str, Optional[str]]:
+    """Map each trace to its own clock when any hydrophone time X is selected."""
+    for hydro_id in frames:
+        for unit in ("s", "h"):
+            if x == f"{hydro_id}_Time({unit})":
+                return {
+                    col: f"{source}_Time({unit})" if f"{source}_Time({unit})" in frame.columns else None
+                    for source, frame in frames.items()
+                    for col in frame.columns
+                }
+    return {}
+
+
+def reset_time_offsets(hydro_ids):
+    for hydro_id in hydro_ids:
+        st.session_state[f"time_offset_{hydro_id}"] = 0.0
+
+
 def _clean_for_log(x_series, y_series, need_log_x: bool, need_log_y: bool):
-        """Return filtered x,y where log axes are valid (>0). Keeps NaNs out too."""
-        x_s = pd.to_numeric(pd.Series(x_series), errors="coerce")
-        y_s = pd.to_numeric(pd.Series(y_series), errors="coerce")
+        """Mask invalid log values without closing gaps between valid samples."""
+        x_s = pd.Series(x_series).reset_index(drop=True)
+        if need_log_x:
+            x_s = pd.to_numeric(x_s, errors="coerce")
+        y_s = pd.to_numeric(pd.Series(y_series).reset_index(drop=True), errors="coerce")
         mask = x_s.notna() & y_s.notna()
         if need_log_x:
             mask &= x_s > 0
         if need_log_y:
             mask &= y_s > 0
-        return x_s[mask], y_s[mask]
+        return x_s, y_s.where(mask)
 
 # -------------------- Plotly charting --------------------
 def build_plotly_dual_axis(
@@ -359,6 +455,7 @@ def build_plotly_dual_axis(
     log_x: bool = False,
     log_y_left: bool = False,
     log_y_right: bool = False,
+    trace_x_columns: Optional[dict[str, Optional[str]]] = None,
     ) -> go.Figure:
     """
     Build a Plotly chart with dual y-axes (left and right).
@@ -381,18 +478,26 @@ def build_plotly_dual_axis(
         x_vals = x_num
 
     fig = go.Figure()
+    trace_x_columns = trace_x_columns or {}
+
+    def trace_values(column, log_y):
+        trace_x = trace_x_columns.get(column, x)
+        if column in trace_x_columns and trace_x is None:
+            return None
+        own_x = df[trace_x] if trace_x in df.columns else x_vals
+        if log_x or (log_y and pd.api.types.is_numeric_dtype(df[column])):
+            return _clean_for_log(own_x, df[column], log_x, log_y)
+        return own_x, df[column]
 
     # LEFT AXIS traces
     for c in y_left:
         if c not in df.columns:
             continue
 
-        is_numeric = pd.api.types.is_numeric_dtype(df[c])
-
-        if log_x or log_y_left and is_numeric:
-            x_plot, y_plot = _clean_for_log(x_vals, df[c], log_x, log_y_left)
-        else:
-            x_plot, y_plot = x_vals, df[c]
+        values = trace_values(c, log_y_left)
+        if values is None:
+            continue
+        x_plot, y_plot = values
 
         fig.add_trace(
             go.Scatter(
@@ -401,6 +506,7 @@ def build_plotly_dual_axis(
                 name=c,
                 mode="lines" if kind == "line" else "markers",
                 yaxis="y1",
+                connectgaps=False,
             )
         )
 
@@ -409,12 +515,10 @@ def build_plotly_dual_axis(
         if c not in df.columns:
             continue
 
-        is_numeric = pd.api.types.is_numeric_dtype(df[c])
-
-        if log_x or log_y_right and is_numeric:
-            x_plot, y_plot = _clean_for_log(x_vals, df[c], log_x, log_y_right)
-        else:
-            x_plot, y_plot = x_vals, df[c]
+        values = trace_values(c, log_y_right)
+        if values is None:
+            continue
+        x_plot, y_plot = values
 
         fig.add_trace(
             go.Scatter(
@@ -423,6 +527,7 @@ def build_plotly_dual_axis(
                 name=c,
                 mode="lines" if kind == "line" else "markers",
                 yaxis="y2",
+                connectgaps=False,
             )
         )
 
@@ -430,8 +535,12 @@ def build_plotly_dual_axis(
     fig.update_layout(
         title=title,
         xaxis=dict(
-            title=x_label, 
-            type="log" if log_x else "linear",
+            title="Time (hours)" if trace_x_columns and x_label.endswith("_Time(h)") else (
+                "Time (seconds)" if trace_x_columns else x_label
+            ),
+            type="log" if log_x else (
+                "date" if pd.api.types.is_datetime64_any_dtype(pd.Series(x_vals)) else "linear"
+            ),
             nticks=60,
         ),
         yaxis=dict(
@@ -498,12 +607,17 @@ for i in range(NUM_FILES):
         f = st.file_uploader(f"Hydrophone {i+1}", type=["csv"], key=f"file_{i}")
         uploaded_files.append(f)
 
-dfs = []
+hydrophone_frames = {}
 for i, uploaded_file in enumerate(uploaded_files):
     if uploaded_file is not None:
         t0 = time.perf_counter()
-        data = uploaded_file.read()
-        hydro_id = extract_hydrophone_id(uploaded_file.name)
+        data = uploaded_file.getvalue()
+        base_id = extract_hydrophone_id(uploaded_file.name)
+        hydro_id = base_id
+        suffix = 2
+        while hydro_id in hydrophone_frames:
+            hydro_id = f"{base_id}_{suffix}"
+            suffix += 1
         df_n = process_csv(
             data=data, num=hydro_id,   # pass string ID instead of integer index
             header_opt=header_opt,
@@ -513,17 +627,78 @@ for i, uploaded_file in enumerate(uploaded_files):
             enable_power_energy=enable_power_energy,
         )
         st.caption(f"⏱ Hydrophone {hydro_id} parsed in {time.perf_counter() - t0:.2f}s")
-        dfs.append(df_n)
+        hydrophone_frames[hydro_id] = df_n
 
-if not dfs:
+if not hydrophone_frames:
     st.info("Upload a file to begin.")
     st.stop()
 
-if len(dfs) > 1:
-    df = pd.concat(dfs, axis=1)
-    st.caption(f"Merged {len(dfs)} files — {df.shape[0]} rows × {df.shape[1]} columns. Rows aligned positionally.")
-else:
-    df = dfs[0]
+all_stages = list(dict.fromkeys(
+    stage
+    for hydro_id, frame in hydrophone_frames.items()
+    if f"{hydro_id}_Status" in frame.columns
+    for stage in frame[f"{hydro_id}_Status"].dropna().unique()
+))
+
+with st.sidebar:
+    st.divider()
+    st.subheader("Hydrophone comparison")
+    selected_stages = None
+    if all_stages:
+        selected_stages = st.multiselect(
+            "Filter by Status", options=all_stages, default=all_stages,
+            help="Applied separately to each hydrophone using its own Status column. Clear all to show no stages.",
+        )
+    alignment = st.selectbox(
+        "Align time to",
+        ["Start of selected data", "Recorded time", "Start of a soak stage"],
+        help="Each hydrophone uses its own time. Start of selected data makes its first visible time zero.",
+    )
+    anchor_stage = None
+    if alignment == "Start of a soak stage":
+        if all_stages:
+            anchor_stage = st.selectbox("Stage at time zero", all_stages)
+            st.caption("Uses the first valid occurrence in each file, even if that stage is hidden.")
+        else:
+            st.warning("No Status stages found. Using recorded time.")
+            alignment = "Recorded time"
+
+    st.caption("Choose a Time(h) or Time(s) X axis to compare each hydrophone on its own clock.")
+    offsets = {}
+    with st.expander("Manual time offsets (hours)"):
+        st.caption("Negative moves a curve earlier (left); positive moves it later (right). Added after alignment.")
+        for hydro_id in hydrophone_frames:
+            offsets[hydro_id] = st.number_input(
+                f"Hydrophone {hydro_id} offset (h)", value=0.0, step=0.1, format="%.6f",
+                key=f"time_offset_{hydro_id}",
+            )
+    st.button("Reset time offsets", on_click=reset_time_offsets, args=(list(hydrophone_frames),))
+
+for hydro_id, frame in hydrophone_frames.items():
+    try:
+        filtered, origin_hours = prepare_comparison_frame(
+            frame, hydro_id, selected_stages, alignment, anchor_stage, offsets[hydro_id]
+        )
+    except ValueError as e:
+        st.warning(f"Hydrophone {hydro_id}: {e}. Omitted from this comparison; choose another alignment.")
+        filtered, origin_hours = frame.iloc[:0].copy(), None
+    hydrophone_frames[hydro_id] = filtered
+    with st.sidebar:
+        if origin_hours is not None:
+            shift_hours = offsets[hydro_id] - origin_hours
+            st.caption(f"{hydro_id}: {len(filtered)} rows · total time shift {shift_hours:+.6f} h")
+        elif f"{hydro_id}_Time(s)" not in frame.columns:
+            st.caption(f"{hydro_id}: {len(filtered)} rows · no elapsed-time column; time alignment unavailable.")
+        else:
+            st.caption(f"{hydro_id}: {len(filtered)} rows · no valid time to align.")
+        if selected_stages is not None and f"{hydro_id}_Status" not in frame.columns:
+            st.caption(f"{hydro_id}: no Status column; stage filter unavailable for this file.")
+
+df = pd.concat(list(hydrophone_frames.values()), axis=1)
+st.caption(
+    f"Comparing {len(hydrophone_frames)} files — {df.shape[0]} rows × {df.shape[1]} columns. "
+    "Time axes use each hydrophone's own timestamps; other X axes compare rows by position."
+)
 
 with st.sidebar:
     st.markdown("--------")
@@ -552,21 +727,6 @@ if df is not None:
 
     with st.expander("Data preview", expanded=True):
         st.dataframe(df.head(200), width = "stretch", hide_index=True)
-
-    # Check for any Status column (accounts for 1_Status, 2_Status prefixes)
-    status_cols = [c for c in df.columns if c.endswith("_Status")]
-    if status_cols:
-        # Use the first one to get unique stage values
-        all_stages = df[status_cols[0]].dropna().unique().tolist()
-        selected_stages = st.multiselect(
-            "Filter by Status",
-            options=all_stages,
-            default=all_stages,  # all selected by default
-            help="Filter rows to only show selected soak test stages"
-        )
-        if selected_stages:
-            df = df[df[status_cols[0]].isin(selected_stages)]
-        st.caption(f"Showing {len(df)} rows after stage filter.")
 
     summary = summarize_df(df)
 else:
@@ -598,7 +758,9 @@ all_cols = list(df.columns)
 
 c1, c2, c3, c4 = st.columns([1.2, 1.2, 1.2, 1])
 with c1:
-    x_choice = st.selectbox("X axis", ["(index)"] + all_cols, index = 0)   # Default to index
+    x_options = ["(index)"] + all_cols
+    default_time = next((c for c in all_cols if c.endswith("_Time(h)")), "(index)")
+    x_choice = st.selectbox("X axis", x_options, index=x_options.index(default_time))
 
 with c2:
     y_left = st.multiselect("Left Y axis", all_cols)  # No pre-selection
@@ -608,6 +770,11 @@ with c3:
 
 with c4:
     kind = st.selectbox("Chart type", ["line", "scatter"], index=0)
+
+trace_x_columns = time_axes_for_traces(hydrophone_frames, x_choice)
+missing_time_traces = [c for c in y_left + y_right if c in trace_x_columns and trace_x_columns[c] is None]
+if missing_time_traces:
+    st.warning("No matching time column; these traces are omitted: " + ", ".join(missing_time_traces))
 
 # Dynamically build the figure with dual axes
 fig = build_plotly_dual_axis(
@@ -620,6 +787,7 @@ fig = build_plotly_dual_axis(
     log_x=log_x,
     log_y_left=log_y_left,
     log_y_right=log_y_right,
+    trace_x_columns=trace_x_columns,
 )
 
 # Display the plot
