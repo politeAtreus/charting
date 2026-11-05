@@ -37,6 +37,7 @@ def add_power_energy(
         voltage_scale: float = 0.001,
         time_col: str = "Time(s)",      # The column that has time in seconds
         energy_from_abs_power: bool = False,
+        status_col: Optional[str] = None,
         ) -> pd.DataFrame:
     
     # Check if the time column exists
@@ -65,7 +66,18 @@ def add_power_energy(
         power = power.abs()
     power_prev = power.shift(1)   # previous power value; a missing sample stays missing
     dE = 0.5 * (power + power_prev) * dt_h  # trapezoidal area for each interval is (P1 + P2)/2 * dt
-    out[e_out_col] = dE.fillna(0).cumsum()
+    dE = dE.fillna(0)
+    if status_col is not None and status_col in out.columns:
+        status = out[status_col].astype("string").str.strip()
+        previous_status = status.shift(1)
+        stage_changed = (
+            (previous_status.eq("Battery is Discharging") & status.eq("Battery is Charging"))
+            | (previous_status.eq("Battery is Charging") & status.eq("Battery is Discharging"))
+        ).fillna(False)
+        dE = dE.mask(stage_changed, 0)
+        out[e_out_col] = dE.groupby(stage_changed.cumsum()).cumsum()
+    else:
+        out[e_out_col] = dE.cumsum()
 
     return out
 
@@ -333,6 +345,7 @@ def process_csv(data: bytes, num: str, header_opt: str, delim_val, percent_as_fr
                 voltage_scale=0.001,   # mV→V default 0.001
                 current_scale=0.001,   # mA→A default 0.001
                 time_col="Time(s)",
+                status_col="battStatus",
                 p_out_col="Power_W",
                 e_out_col="Energy_Wh"
             )
@@ -349,6 +362,7 @@ def process_csv(data: bytes, num: str, header_opt: str, delim_val, percent_as_fr
                 voltage_scale=1.0,   # DMM already in V
                 current_scale=1.0,   # DMM already in A
                 time_col="Time(s)",
+                status_col="battStatus",
                 p_out_col="DMM_Power_W",
                 e_out_col="DMM_Energy_Wh"
             )

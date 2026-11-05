@@ -53,6 +53,8 @@ Skipping a row does not compress the elapsed time. Line charts join the remainin
 
 Metadata before the header is shown separately. The parser handles sparse numeric columns, boolean values, currency symbols, and unit suffixes. `Status` and `battStatus` remain text.
 
+Battery and DMM energy calculations restart at `0 Wh` when `battStatus` changes directly between **Battery is Discharging** and **Battery is Charging**. The transition sample is the zero point for the new stage; energy accumulates from the following sample.
+
 **Downloads** exports the filtered, aligned, scaled comparison table and summaries. Each hydrophone's time columns accompany its data. Files can have different row counts; blank padding in the combined table is excluded from numeric statistics. Source CSV files are never modified.
 
 ## Verification
