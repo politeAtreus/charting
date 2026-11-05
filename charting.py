@@ -70,10 +70,7 @@ def add_power_energy(
     if status_col is not None and status_col in out.columns:
         status = out[status_col].astype("string").str.strip()
         previous_status = status.shift(1)
-        stage_changed = (
-            (previous_status.eq("Battery is Discharging") & status.eq("Battery is Charging"))
-            | (previous_status.eq("Battery is Charging") & status.eq("Battery is Discharging"))
-        ).fillna(False)
+        stage_changed = status.fillna("").ne(previous_status.fillna(""))
         dE = dE.mask(stage_changed, 0)
         out[e_out_col] = dE.groupby(stage_changed.cumsum()).cumsum()
     else:
